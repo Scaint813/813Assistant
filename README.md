@@ -12,3 +12,9 @@ TIMEZONE=Europe/Moscow
 ```
 
 `ALLOWED_USER_ID` ограничивает работу бота только одним пользователем.
+
+## Dev check
+
+```bash
+./scripts_check_no_conflicts.sh
+```
