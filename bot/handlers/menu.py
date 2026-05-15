@@ -1,7 +1,6 @@
 from datetime import datetime, timedelta
 
 
-
 from aiogram import Router
 from aiogram.filters import Command
 from aiogram.types import Message
@@ -46,6 +45,11 @@ async def schedule(message: Message, session_factory, time_service):
     await message.answer(f"Ближайшие исключения расписания:\n{body}")
 
 
+
+@router.message(Command("help"))
+async def help_cmd(message: Message):
+    await message.answer("Отправь текст/голос: бот покажет Action Preview, затем подтверждение. Команды: /today /tasks /reminders /schedule /cleanup /sync_miro")
+
 async def today(message: Message):
     await message.answer("План на сегодня (MVP): пока пусто, добавьте быструю запись или голос.")
 
@@ -79,4 +83,5 @@ async def help_cmd(message: Message):
     await message.answer(
         "Команды: /today /tomorrow /week /quick /tasks /reminders /schedule /rest /finance /workout /study /goals /sync_miro /rebuild_miro /archive /cleanup /settings /help"
     )
+
 

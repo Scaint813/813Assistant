@@ -22,6 +22,7 @@ from aiogram import Router
 from aiogram.filters import Command
 from aiogram.types import Message
 
+
 router = Router()
 
 
@@ -93,6 +94,7 @@ async def confirm_preview(callback: CallbackQuery, session_factory, reminder_sch
         elif any(i.get("type") in {"schedule_override", "rest_day"} for i in payload.get("intents", [])):
             reply_text = "Готово, день отдыха сохранён."
     await callback.message.answer(reply_text)
+
 
     await callback.message.answer("Готово, задача создана.")
 
@@ -220,6 +222,7 @@ async def sync_miro(message: Message, session_factory, miro_service):
                 reminder.miro_item_id = item_id
         await session.commit()
     await message.answer("Синхронизация Miro завершена.")
+
 
 @router.message(Command("quick"))
 async def quick(message: Message):

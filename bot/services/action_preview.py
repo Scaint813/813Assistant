@@ -17,6 +17,7 @@ def render_preview(parsed: dict) -> str:
 
     title = intent.get("title") or ""
 
+
     title = ""
     for intent in parsed.get("intents", []):
         if intent.get("type") == "create_task":
