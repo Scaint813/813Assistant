@@ -14,5 +14,8 @@ async def reminders(message: Message, session_factory):
     if not items:
         await message.answer("Активных напоминаний нет.")
         return
-    text = "\n".join([f"- {r.remind_at}: {r.text}" for r in items[:20]])
-    await message.answer(f"Активные напоминания:\n{text}")
+    lines = []
+    for r in items[:20]:
+        rel = f" ({r.related_entity_type}:{r.related_entity_id})" if r.related_entity_type and r.related_entity_id else ""
+        lines.append(f"- {r.remind_at.strftime('%Y-%m-%d %H:%M')} — {r.text}{rel}")
+    await message.answer("Активные напоминания:\n" + "\n".join(lines))

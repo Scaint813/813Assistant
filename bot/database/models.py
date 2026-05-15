@@ -50,6 +50,8 @@ class Reminder(Base, TimestampMixin):
     remind_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
     status: Mapped[str] = mapped_column(String(32), default="active")
     priority: Mapped[str] = mapped_column(String(16), default="medium")
+    related_entity_type: Mapped[str] = mapped_column(String(64), default="")
+    related_entity_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     miro_item_id: Mapped[str] = mapped_column(String(128), default="")
     miro_frame_id: Mapped[str] = mapped_column(String(128), default="")
 

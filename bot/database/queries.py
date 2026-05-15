@@ -46,11 +46,21 @@ async def create_reminder(session: AsyncSession, user_id: int, text: str, remind
     return reminder
 
 
+async def get_reminder_by_id(session: AsyncSession, user_id: int, reminder_id: int) -> Reminder | None:
+    res = await session.execute(select(Reminder).where(and_(Reminder.id == reminder_id, Reminder.user_id == user_id)))
+    return res.scalar_one_or_none()
+
+
 async def create_schedule_override(session: AsyncSession, user_id: int, override_date: date, mode: str, **kwargs) -> ScheduleOverride:
     item = ScheduleOverride(user_id=user_id, date=override_date, mode=mode, **kwargs)
     session.add(item)
     await session.flush()
     return item
+
+
+async def find_task_by_title(session: AsyncSession, user_id: int, title: str) -> Task | None:
+    res = await session.execute(select(Task).where(and_(Task.user_id == user_id, Task.title == title, Task.status == "active")).order_by(Task.id.desc()))
+    return res.scalar_one_or_none()
 
 
 async def get_active_tasks(session: AsyncSession, user_id: int) -> list[Task]:
@@ -65,6 +75,11 @@ async def get_tasks_for_date(session: AsyncSession, user_id: int, day_start: dat
 
 async def get_active_reminders(session: AsyncSession, user_id: int) -> list[Reminder]:
     res = await session.execute(select(Reminder).where(and_(Reminder.user_id == user_id, Reminder.status == "active")).order_by(Reminder.remind_at.asc()))
+    return list(res.scalars().all())
+
+
+async def get_all_active_reminders(session: AsyncSession) -> list[Reminder]:
+    res = await session.execute(select(Reminder).where(Reminder.status == "active").order_by(Reminder.remind_at.asc()))
     return list(res.scalars().all())
 
 
@@ -85,8 +100,17 @@ async def find_cleanup_candidates(session: AsyncSession, user_id: int, now: date
 
 
 async def has_active_reminder_for_task(session: AsyncSession, user_id: int, task_id: int) -> bool:
-    # no relation in MVP schema; always False
-    return False
+    res = await session.execute(
+        select(Reminder.id).where(
+            and_(
+                Reminder.user_id == user_id,
+                Reminder.status == "active",
+                Reminder.related_entity_type == "task",
+                Reminder.related_entity_id == task_id,
+            )
+        )
+    )
+    return res.first() is not None
 
 
 async def archive_task(session: AsyncSession, task: Task, reason: str, now: datetime) -> None:

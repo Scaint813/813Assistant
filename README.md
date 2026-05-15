@@ -7,8 +7,21 @@
 - Текст/voice -> AI intent parser -> Action Preview -> Confirm -> запись в SQLite.
 - Intents: `create_task`, `create_reminder`, `schedule_override`, `rest_day`, `do_nothing`.
 - Команды чтения: `/today`, `/tasks`, `/reminders`, `/schedule`, `/help`.
-- Автоархив: `/cleanup`.
+- Автоархив: `/cleanup` (учитывает активные связанные напоминания).
 - Синхронизация Miro: `/sync_miro`.
+- Планировщик напоминаний APScheduler с отправкой в Telegram.
+
+## Напоминания
+- После подтверждения preview напоминание сохраняется в БД и ставится в scheduler.
+- При старте бота активные напоминания догружаются из БД в scheduler.
+- Сообщение напоминания содержит кнопки:
+  - `Готово` -> `reminder_done:{id}`
+  - `Перенести` -> `reminder_snooze:{id}`
+  - `Отмена` -> `reminder_cancel:{id}`
+- Перенос предлагает:
+  - `snooze_1h:{id}`
+  - `snooze_evening:{id}`
+  - `snooze_tomorrow_morning:{id}`
 
 ## Настройка `.env`
 1. Скопируйте `.env.example` в `.env`.
@@ -36,6 +49,6 @@ python -m bot.main
 
 ## Development checks
 ```bash
-./scripts_check_no_conflicts.sh
+bash scripts_check_no_conflicts.sh
 python -m compileall .
 ```
