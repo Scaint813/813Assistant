@@ -1,14 +1,29 @@
 from __future__ import annotations
 
+from datetime import datetime
+
 
 def render_preview(parsed: dict) -> str:
-    lines = ["Я понял так:", ""]
-    for idx, intent in enumerate(parsed.get("intents", []), start=1):
-        itype = intent.get("type")
-        if itype == "schedule_override":
-            lines.append(f"{idx}. День отдыха на {intent.get('date')} (без задач/MIRO).")
-        elif itype == "create_reminder":
-            lines.append(f"{idx}. Напоминание: {intent.get('date')} {intent.get('time')} — {intent.get('text')}.")
-        else:
-            lines.append(f"{idx}. {itype}")
-    return "\n".join(lines)
+    intent = (parsed.get("intents") or [{}])[0]
+    t = intent.get("type")
+
+    if t == "create_reminder":
+        when = datetime.fromisoformat(intent["remind_at"]).strftime("%Y-%m-%d %H:%M")
+        return f"Я понял так:\n\n1. Создать напоминание:\n{intent.get('text', '')}\nВремя: {when}\n\nПодтвердить?"
+
+    if t in {"schedule_override", "rest_day"}:
+        return "Я понял так:\n\n1. Поставить день отдыха.\n2. Не создавать тренировочные задачи.\n3. Ничего не добавлять в Miro.\n\nПодтвердить?"
+    if t == "create_problem_block":
+        return (
+            "СИТУАЦИЯ\n"
+            f"Проблема: {intent.get('problem_text') or intent.get('title')}\n\n"
+            "ВЫВОД\nНужен активный блок с коротким решением.\n\n"
+            "ДЕЙСТВИЕ\n"
+            "1. Создать активный блок решения.\n"
+            f"2. Следующий шаг: {intent.get('next_action')}\n"
+            "3. Добавить блок в /next.\n\n"
+            "Подтвердить?"
+        )
+
+    title = intent.get("title") or ""
+    return f"Я понял так:\n\n1. Создать задачу:\n{title}\n\nПодтвердить?"

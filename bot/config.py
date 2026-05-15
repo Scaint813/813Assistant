@@ -13,8 +13,12 @@ load_dotenv()
 @dataclass(slots=True)
 class Config:
     bot_token: str
+    bot_id: int
+    allowed_user_id: int
     openai_api_key: str
     openai_model: str
+    openai_model_fast: str
+    openai_model_smart: str
     transcription_model: str
     miro_token: str
     miro_board_id: str
@@ -26,7 +30,10 @@ class Config:
     evening_time: time
     night_time: time
     database_url: str
-
+    checkin_enabled: bool
+    checkin_morning_time: time
+    checkin_day_time: time
+    checkin_evening_time: time
 
 
 def _parse_time(key: str, default: str) -> time:
@@ -35,14 +42,24 @@ def _parse_time(key: str, default: str) -> time:
     return time(hour=int(hh), minute=int(mm))
 
 
+def _required_env(key: str) -> str:
+    value = os.getenv(key, "").strip()
+    if not value:
+        raise ValueError(f"Missing required env variable: {key}")
+    return value
+
 
 def get_config() -> Config:
     return Config(
-        bot_token=os.getenv("BOT_TOKEN", ""),
+        bot_token=_required_env("BOT_TOKEN"),
+        bot_id=int(_required_env("BOT_ID")),
+        allowed_user_id=int(_required_env("ALLOWED_USER_ID")),
         openai_api_key=os.getenv("OPENAI_API_KEY", ""),
-        openai_model=os.getenv("OPENAI_MODEL", "gpt-4.1-mini"),
-        transcription_model=os.getenv("TRANSCRIPTION_MODEL", "gpt-4o-mini-transcribe"),
-        miro_token=os.getenv("MIRO_TOKEN", ""),
+        openai_model=os.getenv("OPENAI_MODEL", ""),
+        openai_model_fast=os.getenv("OPENAI_MODEL_FAST", "") or os.getenv("OPENAI_MODEL", ""),
+        openai_model_smart=os.getenv("OPENAI_MODEL_SMART", "") or os.getenv("OPENAI_MODEL_FAST", "") or os.getenv("OPENAI_MODEL", ""),
+        transcription_model=os.getenv("OPENAI_TRANSCRIPTION_MODEL", "whisper-1"),
+        miro_token=os.getenv("MIRO_ACCESS_TOKEN", ""),
         miro_board_id=os.getenv("MIRO_BOARD_ID", ""),
         miro_ai_zone_start_x=int(os.getenv("MIRO_AI_ZONE_START_X", "5000")),
         miro_ai_zone_start_y=int(os.getenv("MIRO_AI_ZONE_START_Y", "0")),
@@ -52,4 +69,8 @@ def get_config() -> Config:
         evening_time=_parse_time("DEFAULT_EVENING_TIME", "19:00"),
         night_time=_parse_time("DEFAULT_NIGHT_TIME", "22:00"),
         database_url=os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./assistant.db"),
+        checkin_enabled=os.getenv("CHECKIN_ENABLED", "true").lower() == "true",
+        checkin_morning_time=_parse_time("CHECKIN_MORNING_TIME", "09:30"),
+        checkin_day_time=_parse_time("CHECKIN_DAY_TIME", "14:30"),
+        checkin_evening_time=_parse_time("CHECKIN_EVENING_TIME", "21:30"),
     )
