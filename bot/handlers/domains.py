@@ -21,7 +21,7 @@ router = Router()
 
 
 @router.callback_query(F.data.startswith("confirm_preview:"))
-async def confirm_preview(callback: CallbackQuery, session_factory, reminder_scheduler):
+async def confirm_preview(callback: CallbackQuery, session_factory, reminder_scheduler, time_service):
     await callback.answer()
     preview_id = int(callback.data.split(":", 1)[1])
     async with session_factory() as session:
@@ -29,8 +29,11 @@ async def confirm_preview(callback: CallbackQuery, session_factory, reminder_sch
         if not preview or preview.status != "pending":
             await callback.message.answer("Preview не найден или уже обработан.")
             return
+
         payload = json.loads(preview.preview_json)
         created_tasks_by_title = {}
+        created_reminders = []
+
         for intent in payload.get("intents", []):
             t = intent.get("type")
             if t == "create_task":
@@ -60,6 +63,7 @@ async def confirm_preview(callback: CallbackQuery, session_factory, reminder_sch
                     if existing:
                         related_entity_type = "task"
                         related_entity_id = existing.id
+
                 reminder = await create_reminder(
                     session,
                     callback.from_user.id,
@@ -69,7 +73,8 @@ async def confirm_preview(callback: CallbackQuery, session_factory, reminder_sch
                     related_entity_type=related_entity_type,
                     related_entity_id=related_entity_id,
                 )
-                reminder_scheduler.add_or_replace(reminder)
+                created_reminders.append(reminder)
+
             elif t in {"schedule_override", "rest_day"}:
                 await create_schedule_override(
                     session,
@@ -79,13 +84,22 @@ async def confirm_preview(callback: CallbackQuery, session_factory, reminder_sch
                     create_tasks=bool(intent.get("create_tasks", False)),
                     write_to_miro=bool(intent.get("write_to_miro", False)),
                 )
+
         preview.status = "confirmed"
         await session.commit()
-        reply_text = "Готово, задача создана."
-        if any(i.get("type") == "create_reminder" for i in payload.get("intents", [])):
+
+    for reminder in created_reminders:
+        if reminder.remind_at > time_service.now():
+            reminder_scheduler.schedule_reminder(reminder)
+
+    reply_text = "Готово, задача создана."
+    if created_reminders:
+        if any(r.remind_at <= time_service.now() for r in created_reminders):
+            reply_text = "Напоминание создано, но время уже прошло. Проверь дату/время."
+        else:
             reply_text = "Готово, напоминание создано."
-        elif any(i.get("type") in {"schedule_override", "rest_day"} for i in payload.get("intents", [])):
-            reply_text = "Готово, день отдыха сохранён."
+    elif any(i.get("type") in {"schedule_override", "rest_day"} for i in payload.get("intents", [])):
+        reply_text = "Готово, день отдыха сохранён."
     await callback.message.answer(reply_text)
 
 
@@ -101,12 +115,6 @@ async def cancel_preview(callback: CallbackQuery, session_factory):
     await callback.message.answer("Отменено.")
 
 
-@router.callback_query(F.data.startswith("edit_preview:"))
-async def edit_preview(callback: CallbackQuery):
-    await callback.answer()
-    await callback.message.answer("Пришли исправленный текст сообщением — я подготовлю новый preview.")
-
-
 @router.callback_query(F.data.startswith("reminder_done:"))
 async def reminder_done(callback: CallbackQuery, session_factory, reminder_scheduler):
     await callback.answer()
@@ -118,8 +126,8 @@ async def reminder_done(callback: CallbackQuery, session_factory, reminder_sched
             return
         reminder.status = "done"
         await session.commit()
-    reminder_scheduler.remove(reminder_id)
-    await callback.message.answer("Отмечено как выполненное.")
+    reminder_scheduler.cancel_reminder_job(reminder_id)
+    await callback.message.answer("Готово, напоминание закрыто.")
 
 
 @router.callback_query(F.data.startswith("reminder_cancel:"))
@@ -133,12 +141,12 @@ async def reminder_cancel(callback: CallbackQuery, session_factory, reminder_sch
             return
         reminder.status = "cancelled"
         await session.commit()
-    reminder_scheduler.remove(reminder_id)
+    reminder_scheduler.cancel_reminder_job(reminder_id)
     await callback.message.answer("Напоминание отменено.")
 
 
-@router.callback_query(F.data.startswith("reminder_snooze:"))
-async def reminder_snooze(callback: CallbackQuery):
+@router.callback_query(F.data.startswith("reminder_snooze_menu:"))
+async def reminder_snooze_menu(callback: CallbackQuery):
     await callback.answer()
     reminder_id = int(callback.data.split(":", 1)[1])
     await callback.message.answer("Выберите перенос:", reply_markup=reminder_snooze_keyboard(reminder_id))
@@ -154,33 +162,39 @@ async def _apply_snooze(callback: CallbackQuery, session_factory, reminder_sched
         if mode == "1h":
             reminder.remind_at = now + timedelta(hours=1)
         elif mode == "evening":
-            reminder.remind_at = time_service.build_datetime("today", "evening")
-            if reminder.remind_at <= now:
-                reminder.remind_at = time_service.build_datetime("tomorrow", "evening")
+            candidate = time_service.build_datetime("today", "evening")
+            reminder.remind_at = candidate if candidate > now else time_service.build_datetime("tomorrow", "evening")
         else:
             reminder.remind_at = time_service.build_datetime("tomorrow", "morning")
         reminder.status = "active"
         await session.commit()
-        reminder_scheduler.add_or_replace(reminder)
-    await callback.message.answer(f"Перенесено на {reminder.remind_at.strftime('%Y-%m-%d %H:%M')}")
+    reminder_scheduler.cancel_reminder_job(reminder_id)
+    reminder_scheduler.schedule_reminder(reminder)
+    await callback.message.answer(f"Перенёс на {reminder.remind_at.strftime('%H:%M')}.")
 
 
-@router.callback_query(F.data.startswith("snooze_1h:"))
-async def snooze_1h(callback: CallbackQuery, session_factory, reminder_scheduler, time_service):
+@router.callback_query(F.data.startswith("reminder_snooze_1h:"))
+async def reminder_snooze_1h(callback: CallbackQuery, session_factory, reminder_scheduler, time_service):
     await callback.answer()
     await _apply_snooze(callback, session_factory, reminder_scheduler, time_service, int(callback.data.split(":", 1)[1]), "1h")
 
 
-@router.callback_query(F.data.startswith("snooze_evening:"))
-async def snooze_evening(callback: CallbackQuery, session_factory, reminder_scheduler, time_service):
+@router.callback_query(F.data.startswith("reminder_snooze_evening:"))
+async def reminder_snooze_evening(callback: CallbackQuery, session_factory, reminder_scheduler, time_service):
     await callback.answer()
     await _apply_snooze(callback, session_factory, reminder_scheduler, time_service, int(callback.data.split(":", 1)[1]), "evening")
 
 
-@router.callback_query(F.data.startswith("snooze_tomorrow_morning:"))
-async def snooze_tomorrow_morning(callback: CallbackQuery, session_factory, reminder_scheduler, time_service):
+@router.callback_query(F.data.startswith("reminder_snooze_tomorrow_morning:"))
+async def reminder_snooze_tomorrow_morning(callback: CallbackQuery, session_factory, reminder_scheduler, time_service):
     await callback.answer()
     await _apply_snooze(callback, session_factory, reminder_scheduler, time_service, int(callback.data.split(":", 1)[1]), "tomorrow_morning")
+
+
+@router.callback_query(F.data.startswith("reminder_snooze_cancel:"))
+async def reminder_snooze_cancel(callback: CallbackQuery):
+    await callback.answer()
+    await callback.message.answer("Перенос отменён.")
 
 
 @router.message(Command("cleanup"))
