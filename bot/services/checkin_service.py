@@ -46,13 +46,22 @@ class CheckinService:
             return False
         if state.last_user_activity_at and state.last_user_activity_at >= now - timedelta(minutes=45):
             return False
+        if state.checkin_count_date != now.date():
+            state.checkin_count_date = now.date()
+            state.checkin_count_today = 0
+        if state.checkin_count_today >= 3:
+            return False
         if state.last_checkin_at and state.last_checkin_at.date() == now.date() and state.last_checkin_at >= now - timedelta(hours=2):
             return False
         return True
 
     async def mark_checkin_sent(self, user_id: int, session, now: datetime):
         state = await get_or_create_runtime_state(session, user_id)
+        if state.checkin_count_date != now.date():
+            state.checkin_count_date = now.date()
+            state.checkin_count_today = 0
         state.last_checkin_at = now
+        state.checkin_count_today = (state.checkin_count_today or 0) + 1
         await session.flush()
 
     async def send_checkin(self, user_id: int, checkin_type: str, bot):

@@ -429,20 +429,16 @@ async def cleanup(message: Message, session_factory, cleanup_service, time_servi
 @router.message(Command("sync_miro"))
 async def sync_miro(message: Message, session_factory, miro_service, time_service):
     if not miro_service.is_configured():
-        await message.answer("Miro не настроен: отсутствует MIRO_ACCESS_TOKEN или MIRO_BOARD_ID.")
+        await message.answer("Miro не настроен.\n\nНужно заполнить:\nMIRO_ACCESS_TOKEN\nMIRO_BOARD_ID")
         return
     try:
         async with session_factory() as session:
-            tasks = await get_active_tasks(session, message.from_user.id)
-            reminders = await get_active_reminders(session, message.from_user.id)
-            overrides = await get_upcoming_overrides(session, message.from_user.id, time_service.today())
-            archived = await get_archived_tasks(session, message.from_user.id)
-            stats = await miro_service.sync_all(tasks, reminders, overrides, archived)
+            stats = await miro_service.sync_all(message.from_user.id, session, time_service, message.bot.dispatcher["config"])
             await session.commit()
         await message.answer(
             "Miro обновлён.\n\n"
-            f"Штаб: обновлён\nЗадачи: {stats['tasks']}\nНапоминания: {stats['reminders']}\n"
-            f"Расписание: {stats['schedule']}\nАрхив: {stats['archive']}\n\n"
+            f"Штаб: обновлён\nЗадачи: {stats['tasks']}\nНапоминания: {stats['reminders']}\nПроблемы: {stats['problems']}\n"
+            f"Расписание: {stats['schedule']}\nCheck-ins: обновлены\nАрхив: {stats['archive']}\n\n"
             "Следующий шаг:\nпроверить Штаб в Miro."
         )
     except Exception:

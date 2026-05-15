@@ -33,6 +33,8 @@ class UserRuntimeState(Base, TimestampMixin):
     last_checkin_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     quiet_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     checkin_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    checkin_count_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    checkin_count_today: Mapped[int] = mapped_column(Integer, default=0)
 
 
 class Task(Base, TimestampMixin):
@@ -129,3 +131,16 @@ class ProblemBlockEvent(Base):
     event_type: Mapped[str] = mapped_column(String(64), default="")
     comment: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+
+class MiroMapping(Base, TimestampMixin):
+    __tablename__ = "miro_mappings"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(Integer, index=True)
+    entity_type: Mapped[str] = mapped_column(String(64), index=True)
+    entity_id: Mapped[int] = mapped_column(Integer, index=True)
+    board_id: Mapped[str] = mapped_column(String(128), default="")
+    frame_id: Mapped[str] = mapped_column(String(128), default="")
+    item_id: Mapped[str] = mapped_column(String(128), default="")
+    x: Mapped[int] = mapped_column(Integer, default=0)
+    y: Mapped[int] = mapped_column(Integer, default=0)

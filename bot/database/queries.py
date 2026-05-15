@@ -6,7 +6,7 @@ from datetime import date, datetime, timedelta
 from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from bot.database.models import CleanupLog, PendingPreview, ProblemBlock, ProblemBlockEvent, Reminder, ScheduleOverride, Task, UserProfile, UserRuntimeState
+from bot.database.models import CleanupLog, MiroMapping, PendingPreview, ProblemBlock, ProblemBlockEvent, Reminder, ScheduleOverride, Task, UserProfile, UserRuntimeState
 
 
 async def get_or_create_user_profile(session: AsyncSession, user_id: int, name: str, timezone: str) -> UserProfile:
@@ -178,3 +178,27 @@ async def get_active_problem_blocks(session: AsyncSession, user_id: int, now: da
         ).order_by(ProblemBlock.priority.desc(), ProblemBlock.created_at.desc())
     )
     return list(res.scalars().all())
+
+
+async def get_miro_mapping(session: AsyncSession, user_id: int, entity_type: str, entity_id: int, board_id: str) -> MiroMapping | None:
+    res = await session.execute(
+        select(MiroMapping).where(
+            and_(
+                MiroMapping.user_id == user_id,
+                MiroMapping.entity_type == entity_type,
+                MiroMapping.entity_id == entity_id,
+                MiroMapping.board_id == board_id,
+            )
+        )
+    )
+    return res.scalar_one_or_none()
+
+
+async def get_or_create_miro_mapping(session: AsyncSession, user_id: int, entity_type: str, entity_id: int, board_id: str) -> MiroMapping:
+    row = await get_miro_mapping(session, user_id, entity_type, entity_id, board_id)
+    if row:
+        return row
+    row = MiroMapping(user_id=user_id, entity_type=entity_type, entity_id=entity_id, board_id=board_id)
+    session.add(row)
+    await session.flush()
+    return row
