@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from bot.config import get_config
 from bot.database.migrations import create_schema
-from bot.handlers import quick_note, reminders, start, voice
+from bot.handlers import domains, menu, quick_note, reminders, start, voice
 from bot.services.ai_service import AIService
 from bot.services.transcription_service import TranscriptionService
 
@@ -25,6 +25,8 @@ async def main() -> None:
     dp = Dispatcher()
     dp.include_router(start.router)
     dp.include_router(reminders.router)
+    dp.include_router(menu.router)
+    dp.include_router(domains.router)
     dp.include_router(voice.router)
     dp.include_router(quick_note.router)
 
