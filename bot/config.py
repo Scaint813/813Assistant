@@ -13,6 +13,7 @@ load_dotenv()
 @dataclass(slots=True)
 class Config:
     bot_token: str
+    bot_id: int
     allowed_user_id: int
     openai_api_key: str
     openai_model: str
@@ -45,6 +46,9 @@ def _required_env(key: str) -> str:
 def get_config() -> Config:
     return Config(
         bot_token=_required_env("BOT_TOKEN"),
+        bot_id=int(_required_env("BOT_ID")),
+        allowed_user_id=int(_required_env("ALLOWED_USER_ID")),
+
         allowed_user_id=int(os.getenv("ALLOWED_USER_ID", "0")),
         openai_api_key=os.getenv("OPENAI_API_KEY", ""),
         openai_model=os.getenv("OPENAI_MODEL", "gpt-4.1-mini"),
