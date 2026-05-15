@@ -35,7 +35,6 @@ class Config:
     checkin_day_time: time
     checkin_evening_time: time
 
-
 def _parse_time(key: str, default: str) -> time:
     raw = os.getenv(key, default)
     hh, mm = raw.split(":")
