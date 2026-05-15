@@ -6,6 +6,7 @@ from aiogram.types import Message
 
 from bot.database.queries import get_active_tasks, get_reminders_for_date, get_tasks_for_date, get_upcoming_overrides
 from bot.keyboards.inline import nav_keyboard
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from bot.keyboards.main_menu import main_menu
 
 router = Router()
@@ -73,7 +74,61 @@ async def problems(message: Message, session_factory, time_service):
         lines.append(f"{i+1}. {b.title}")
         lines.append(f"   Категория: {b.category}")
         lines.append(f"   Следующий шаг: {b.next_action}")
-    await message.answer("\n".join(lines))
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Следующий шаг", callback_data="next_step")],
+        [InlineKeyboardButton(text="Архив", callback_data=f"problem_archive:{blocks[0].id}")],
+        [InlineKeyboardButton(text="Главное меню", callback_data="main_menu")],
+    ])
+    await message.answer("\n".join(lines), reply_markup=kb)
+
+
+async def _send_problem_checkin(message: Message, session_factory, time_service, checkin_type: str):
+    async with session_factory() as session:
+        service = message.bot.dispatcher["problem_block_service"]
+        block = await service.pick_checkin_problem_block(message.from_user.id, session, checkin_type, time_service.now())
+    if not block:
+        await message.answer("Штаб на связи.\nКритичных блоков сейчас нет.")
+        return
+    if checkin_type == "morning":
+        text = f"Штаб на связи.\n\nАктивный блок:\n{block.title}\n\nСледующий шаг:\n{block.next_action}"
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Начать", callback_data="next_step")],
+            [InlineKeyboardButton(text="Развернуть", callback_data=f"problem_expand:{block.id}")],
+            [InlineKeyboardButton(text="Отложить", callback_data=f"problem_snooze:{block.id}")],
+            [InlineKeyboardButton(text="Тихий режим", callback_data="quiet_mode")],
+        ])
+    elif checkin_type == "day":
+        text = f"Промежуточная проверка.\n\nБлок ещё открыт:\n{block.title}\n\nСледующий шаг:\n{block.next_action}"
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Следующий шаг", callback_data="next_step")],
+            [InlineKeyboardButton(text="Отложить", callback_data=f"problem_snooze:{block.id}")],
+            [InlineKeyboardButton(text="Ресурсы", callback_data=f"problem_resources:{block.id}")],
+            [InlineKeyboardButton(text="Тихий режим", callback_data="quiet_mode")],
+        ])
+    else:
+        text = f"Закрываем день.\n\nОткрытый блок:\n{block.title}\n\nЧто делаем?"
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Закрыть", callback_data=f"problem_done:{block.id}")],
+            [InlineKeyboardButton(text="Отложить до завтра", callback_data=f"problem_snooze_tomorrow:{block.id}")],
+            [InlineKeyboardButton(text="Оставить активным", callback_data=f"problem_keep_active:{block.id}")],
+            [InlineKeyboardButton(text="Тихий режим", callback_data="quiet_mode")],
+        ])
+    await message.answer(text, reply_markup=kb)
+
+
+@router.message(Command("checkin_morning"))
+async def checkin_morning(message: Message, session_factory, time_service):
+    await _send_problem_checkin(message, session_factory, time_service, "morning")
+
+
+@router.message(Command("checkin_day"))
+async def checkin_day(message: Message, session_factory, time_service):
+    await _send_problem_checkin(message, session_factory, time_service, "day")
+
+
+@router.message(Command("checkin_evening"))
+async def checkin_evening(message: Message, session_factory, time_service):
+    await _send_problem_checkin(message, session_factory, time_service, "evening")
 
 
 @router.message(Command("tasks"))

@@ -86,10 +86,19 @@ def quiet_keyboard() -> InlineKeyboardMarkup:
 def problem_block_keyboard(block_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Следующий шаг", callback_data="next_step")],
+        [InlineKeyboardButton(text="Отложить", callback_data=f"problem_snooze:{block_id}")],
         [InlineKeyboardButton(text="Ресурсы", callback_data=f"problem_resources:{block_id}")],
         [InlineKeyboardButton(text="Развернуть", callback_data=f"problem_expand:{block_id}")],
         [InlineKeyboardButton(text="Сохранить", callback_data=f"problem_done:{block_id}")],
         [InlineKeyboardButton(text="Архив", callback_data=f"problem_archive:{block_id}")],
-        [InlineKeyboardButton(text="Отложить до завтра", callback_data=f"problem_snooze_tomorrow:{block_id}")],
         [InlineKeyboardButton(text="Главное меню", callback_data="main_menu")],
+    ])
+
+
+def problem_snooze_keyboard(block_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="До завтра", callback_data=f"problem_snooze_tomorrow:{block_id}")],
+        [InlineKeyboardButton(text="На 3 дня", callback_data=f"problem_snooze_3d:{block_id}")],
+        [InlineKeyboardButton(text="На неделю", callback_data=f"problem_snooze_week:{block_id}")],
+        [InlineKeyboardButton(text="Отмена", callback_data=f"problem_snooze_cancel:{block_id}")],
     ])

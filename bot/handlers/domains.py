@@ -18,7 +18,7 @@ from bot.database.queries import (
     get_reminder_by_id,
     get_problem_block_by_id,
 )
-from bot.keyboards.inline import problem_block_keyboard, reminder_snooze_keyboard
+from bot.keyboards.inline import problem_block_keyboard, problem_snooze_keyboard, reminder_snooze_keyboard
 
 router = Router()
 
@@ -151,6 +151,86 @@ async def problem_resources(callback: CallbackQuery, session_factory):
         await callback.message.answer("Готовых ресурсов нет. Блок создан, решение можно уточнить позже.")
         return
     await callback.message.answer("Ресурсы:\n" + "\n".join(f"- {r.get('title')}: {r.get('note')}" for r in data[:4]))
+
+
+@router.callback_query(F.data.startswith("problem_expand:"))
+async def problem_expand(callback: CallbackQuery, session_factory, problem_block_service):
+    await callback.answer()
+    block_id = int(callback.data.split(":", 1)[1])
+    async with session_factory() as session:
+        block = await get_problem_block_by_id(session, callback.from_user.id, block_id)
+    if not block or block.status != "active":
+        await callback.message.answer("Блок не найден или уже закрыт.")
+        return
+    resources = json.loads(block.resources_json or "[]")
+    why = "Создаёт повторяемый сбой и съедает ресурс."
+    text = (
+        f"ПРОБЛЕМА\n{block.title}\n\n"
+        f"ПОЧЕМУ МЕШАЕТ\n{why}\n\n"
+        f"{problem_block_service.build_problem_solution_summary(block)}"
+    )
+    if resources:
+        text += "\n\nРЕСУРСЫ\n" + "\n".join(f"- {r.get('title')}" for r in resources[:3])
+    await callback.message.answer(text, reply_markup=problem_block_keyboard(block.id))
+
+
+@router.callback_query(F.data.startswith("problem_snooze:"))
+async def problem_snooze(callback: CallbackQuery):
+    await callback.answer()
+    block_id = int(callback.data.split(":", 1)[1])
+    await callback.message.answer("Отложить блок:", reply_markup=problem_snooze_keyboard(block_id))
+
+
+@router.callback_query(F.data.startswith("problem_snooze_tomorrow:"))
+async def problem_snooze_tomorrow(callback: CallbackQuery, session_factory, problem_block_service, time_service):
+    await callback.answer()
+    block_id = int(callback.data.split(":", 1)[1])
+    now = time_service.now()
+    until = time_service.build_datetime("tomorrow", "morning").replace(hour=9, minute=0, second=0, microsecond=0)
+    async with session_factory() as session:
+        item = await problem_block_service.snooze_problem_block(callback.from_user.id, block_id, until, session, "Snoozed until tomorrow")
+        await session.commit()
+    await callback.message.answer("Отложил до завтра, 09:00." if item else "Блок не найден или уже закрыт.")
+
+
+@router.callback_query(F.data.startswith("problem_snooze_3d:"))
+async def problem_snooze_3d(callback: CallbackQuery, session_factory, problem_block_service, time_service):
+    await callback.answer()
+    block_id = int(callback.data.split(":", 1)[1])
+    now = time_service.now()
+    async with session_factory() as session:
+        item = await problem_block_service.snooze_problem_block(callback.from_user.id, block_id, now + timedelta(days=3), session, "Snoozed for 3 days")
+        await session.commit()
+    await callback.message.answer("Отложил на 3 дня." if item else "Блок не найден или уже закрыт.")
+
+
+@router.callback_query(F.data.startswith("problem_snooze_week:"))
+async def problem_snooze_week(callback: CallbackQuery, session_factory, problem_block_service, time_service):
+    await callback.answer()
+    block_id = int(callback.data.split(":", 1)[1])
+    now = time_service.now()
+    async with session_factory() as session:
+        item = await problem_block_service.snooze_problem_block(callback.from_user.id, block_id, now + timedelta(days=7), session, "Snoozed for 7 days")
+        await session.commit()
+    await callback.message.answer("Отложил на неделю." if item else "Блок не найден или уже закрыт.")
+
+
+@router.callback_query(F.data.startswith("problem_snooze_cancel:"))
+async def problem_snooze_cancel(callback: CallbackQuery):
+    await callback.answer()
+    await callback.message.answer("Перенос отменён.")
+
+
+@router.callback_query(F.data.startswith("problem_keep_active:"))
+async def problem_keep_active(callback: CallbackQuery, session_factory):
+    await callback.answer()
+    block_id = int(callback.data.split(":", 1)[1])
+    async with session_factory() as session:
+        block = await get_problem_block_by_id(session, callback.from_user.id, block_id)
+        if block:
+            block.status = "active"
+        await session.commit()
+    await callback.message.answer("Оставил активным." if block else "Блок не найден или уже закрыт.")
 
 
 @router.callback_query(F.data.startswith("cancel_preview:"))
