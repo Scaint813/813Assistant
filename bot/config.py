@@ -49,6 +49,7 @@ def get_config() -> Config:
         bot_id=int(_required_env("BOT_ID")),
         allowed_user_id=int(_required_env("ALLOWED_USER_ID")),
 
+
         allowed_user_id=int(os.getenv("ALLOWED_USER_ID", "0")),
         openai_api_key=os.getenv("OPENAI_API_KEY", ""),
         openai_model=os.getenv("OPENAI_MODEL", "gpt-4.1-mini"),

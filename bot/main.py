@@ -7,13 +7,11 @@ from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-
 from bot.config import get_config
 from bot.database.migrations import create_schema
 from bot.database.queries import get_all_active_reminders
 from bot.handlers import domains, menu, quick_note, reminders, start, voice
 from bot.middlewares import AccessMiddleware
-
 from bot.handlers import domains, menu, quick_note, reminders, start, voice
 from bot.services.ai_service import AIService
 from bot.services.cleanup_service import CleanupService
@@ -54,6 +52,16 @@ async def main() -> None:
     async with session_factory() as session:
         reminders_list = await get_all_active_reminders(session)
     await reminder_scheduler.load_from_db(reminders_list)
+
+
+
+    bot = Bot(token=cfg.bot_token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+    reminder_scheduler = ReminderScheduler(cfg.timezone, bot, session_factory)
+    reminder_scheduler.start()
+    async with session_factory() as session:
+        reminders_list = await get_all_active_reminders(session)
+    await reminder_scheduler.load_from_db(reminders_list)
+
 
     dp["config"] = cfg
     dp["session_factory"] = session_factory

@@ -56,5 +56,6 @@ AI Telegram assistant bot scaffold on aiogram 3.x with SQLite, APScheduler, Open
 
 ```bash
 ./scripts_check_no_conflicts.sh
+
 python -m compileall .
 ```

@@ -4,6 +4,7 @@ set -e
 pattern_start='<<<<''<<<'
 pattern_mid='====''==='
 
+
 pattern_mid='======='
 pattern_end='>>>>''>>>'
 
