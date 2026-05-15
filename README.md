@@ -39,7 +39,11 @@
 ## Подключение OpenAI
 1. Создайте API key в OpenAI Platform.
 2. Укажите `OPENAI_API_KEY` в `.env`.
-3. Проверьте `OPENAI_MODEL` и `OPENAI_TRANSCRIPTION_MODEL`.
+3. Настройте модели:
+   - `OPENAI_MODEL_FAST` для простых intent-задач
+   - `OPENAI_MODEL_SMART` для сложного анализа/планирования
+   - `OPENAI_MODEL` как обратная совместимость/fallback
+   - `OPENAI_TRANSCRIPTION_MODEL` для voice транскрибации
 
 ## Подключение Miro
 1. Создайте Miro app и получите token.
@@ -68,3 +72,19 @@ python -m compileall .
 - Кнопка `/next` или `Следующий шаг` даёт 1–3 действия без перегруза.
 - При признаках перегруза бот показывает экран стабилизации с кнопками: `Экстренный отдых`, `Собрать лёгкий план`, `Скипнуть и продолжить`.
 - Для inline-навигации есть `Назад` и `Главное меню`.
+
+
+## Miro структура штаба
+- Бот использует AI-зону только правее `MIRO_AI_ZONE_START_X`.
+- `/sync_miro` создаёт/обновляет заголовки фреймов и данные по блокам:
+  - `ШТАБ/TODAY`, `ЗАДАЧИ/TASKS`, `НАПОМИНАНИЯ/REMINDERS`, `РАСПИСАНИЕ/SCHEDULE`, `АРХИВ/ARCHIVE`.
+- Остальные фреймы (`MONEY/ORDERS/STUDY/BODY/PROTOCOLS`) создаются как заготовки.
+- Дубли предотвращаются через повторное использование `miro_item_id` у задач/напоминаний.
+- Если Miro не настроен, `/sync_miro` возвращает короткую ошибку, остальной бот продолжает работать.
+
+## Выбор OpenAI-модели
+- Простые intent-задачи идут через `OPENAI_MODEL_FAST`.
+- Сложные анализ/планирование/перегруз/next-step маршрутизируются в `OPENAI_MODEL_SMART`.
+- Если SMART не задана — fallback в FAST.
+- Если FAST не задана — fallback в `OPENAI_MODEL`.
+- Если модели не заданы или OpenAI недоступен — rule-based parser fallback.

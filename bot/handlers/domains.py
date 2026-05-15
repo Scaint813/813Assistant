@@ -12,6 +12,8 @@ from bot.database.queries import (
     find_task_by_title,
     get_active_reminders,
     get_active_tasks,
+    get_archived_tasks,
+    get_upcoming_overrides,
     get_pending_preview,
     get_reminder_by_id,
 )
@@ -209,23 +211,26 @@ async def cleanup(message: Message, session_factory, cleanup_service, time_servi
 
 
 @router.message(Command("sync_miro"))
-async def sync_miro(message: Message, session_factory, miro_service):
+async def sync_miro(message: Message, session_factory, miro_service, time_service):
     if not miro_service.is_configured():
-        await message.answer("Miro не настроен: отсутствует MIRO_ACCESS_TOKEN или MIRO_BOARD_ID")
+        await message.answer("Miro не настроен: отсутствует MIRO_ACCESS_TOKEN или MIRO_BOARD_ID.")
         return
-    async with session_factory() as session:
-        tasks = await get_active_tasks(session, message.from_user.id)
-        reminders = await get_active_reminders(session, message.from_user.id)
-        for i, task in enumerate(tasks[:20]):
-            item_id = await miro_service.create_or_update_task(task, i)
-            if item_id and not task.miro_item_id:
-                task.miro_item_id = item_id
-        for i, reminder in enumerate(reminders[:20]):
-            item_id = await miro_service.create_or_update_reminder(reminder, i)
-            if item_id and not reminder.miro_item_id:
-                reminder.miro_item_id = item_id
-        await session.commit()
-    await message.answer("Синхронизация Miro завершена.")
+    try:
+        async with session_factory() as session:
+            tasks = await get_active_tasks(session, message.from_user.id)
+            reminders = await get_active_reminders(session, message.from_user.id)
+            overrides = await get_upcoming_overrides(session, message.from_user.id, time_service.today())
+            archived = await get_archived_tasks(session, message.from_user.id)
+            stats = await miro_service.sync_all(tasks, reminders, overrides, archived)
+            await session.commit()
+        await message.answer(
+            "Miro обновлён.\n\n"
+            f"Штаб: обновлён\nЗадачи: {stats['tasks']}\nНапоминания: {stats['reminders']}\n"
+            f"Расписание: {stats['schedule']}\nАрхив: {stats['archive']}\n\n"
+            "Следующий шаг:\nпроверить Штаб в Miro."
+        )
+    except Exception:
+        await message.answer("Miro не обновлён. Ошибка записана в лог.")
 
 
 @router.callback_query(F.data == "main_menu")

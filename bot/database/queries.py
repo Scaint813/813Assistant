@@ -119,3 +119,8 @@ async def archive_task(session: AsyncSession, task: Task, reason: str, now: date
     task.cleanup_reason = reason
     session.add(CleanupLog(user_id=task.user_id, entity_type="task", entity_id=task.id, action="archive", reason=reason))
     await session.flush()
+
+
+async def get_archived_tasks(session: AsyncSession, user_id: int) -> list[Task]:
+    res = await session.execute(select(Task).where(and_(Task.user_id == user_id, Task.status == "archived")).order_by(Task.archived_at.desc()))
+    return list(res.scalars().all())

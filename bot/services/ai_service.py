@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime
 from typing import Any, Literal
 
 import httpx
@@ -13,9 +12,6 @@ logger = logging.getLogger(__name__)
 SYSTEM_PROMPT = """
 Ты — личный AI-ассистент. Возвращай ТОЛЬКО JSON формата {"intents": [...]}.
 Разрешённые intents: create_task, create_reminder, rest_day, show_today, show_tasks, do_nothing.
-Если пользователь явно просит ничего не сохранять ("не записывай", "просто подумай", "ничего не сохраняй") и отдельно не просит "напомни" — верни do_nothing.
-Если просит показать сегодня — show_today. Если просит показать задачи — show_tasks.
-Для create_reminder старайся вернуть remind_at ISO datetime с timezone. Если не уверен — верни date/time словами.
 """.strip()
 
 
@@ -41,16 +37,30 @@ class AIResult(BaseModel):
 
 
 class AIService:
-    def __init__(self, api_key: str, model: str):
+    def __init__(self, api_key: str, model_fast: str, model_smart: str, model_default: str = ""):
         self.api_key = api_key
-        self.model = model
+        self.model_fast = model_fast or model_default
+        self.model_smart = model_smart or self.model_fast
+
+    def choose_model_for_intent(self, intent_type: str | None, text: str, context: dict[str, Any]) -> str:
+        t = (intent_type or "").lower()
+        lowered = text.lower()
+        smart_markers = ["анализ", "конфликт", "перегруз", "план", "next", "следующий шаг"]
+        if t in {"analyze", "overload", "planning", "next_step"} or any(m in lowered for m in smart_markers):
+            return self.model_smart or self.model_fast
+        return self.model_fast or self.model_smart
 
     async def parse_intent_with_openai(self, text: str, context: dict[str, Any]) -> dict[str, Any] | None:
         if not self.api_key:
             logger.info("OPENAI_API_KEY is not configured; using fallback parser")
             return None
+        model = self.choose_model_for_intent(None, text, context)
+        if not model:
+            logger.warning("No OpenAI model configured; using fallback parser")
+            return None
+        logger.info("OpenAI parser model: %s", model)
         payload = {
-            "model": self.model,
+            "model": model,
             "messages": [
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": json.dumps({"text": text, "context": context}, ensure_ascii=False)},
@@ -60,11 +70,7 @@ class AIService:
         }
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
-                r = await client.post(
-                    "https://api.openai.com/v1/chat/completions",
-                    headers={"Authorization": f"Bearer {self.api_key}"},
-                    json=payload,
-                )
+                r = await client.post("https://api.openai.com/v1/chat/completions", headers={"Authorization": f"Bearer {self.api_key}"}, json=payload)
                 r.raise_for_status()
                 content = r.json()["choices"][0]["message"]["content"]
                 parsed = AIResult.model_validate(json.loads(content))
@@ -75,48 +81,14 @@ class AIService:
 
     def parse_intent_fallback(self, text: str) -> dict[str, Any]:
         lowered = text.lower().strip()
-
         if any(p in lowered for p in ("что сегодня", "что у меня сегодня", "покажи сегодня", "план на сегодня")):
             return {"intents": [{"type": "show_today"}]}
         if any(p in lowered for p in ("покажи задачи", "что по задачам", "активные задачи")):
             return {"intents": [{"type": "show_tasks"}]}
-
-        do_nothing_markers = ("не записывай", "просто подумай", "ничего не сохраняй", "не добавляй")
-        if any(p in lowered for p in do_nothing_markers) and "напомни" not in lowered:
+        if any(p in lowered for p in ("не записывай", "просто подумай", "ничего не сохраняй", "не добавляй")) and "напомни" not in lowered:
             return {"intents": [{"type": "do_nothing", "reply": "Понял, ничего не записываю."}]}
-
         if any(p in lowered for p in ("отдыхаю", "день отдыха", "ничего не ставь", "без тренировки")):
-            return {
-                "intents": [
-                    {
-                        "type": "rest_day",
-                        "date": "today" if "сегодня" in lowered else ("tomorrow" if "завтра" in lowered else "today"),
-                        "title": "День отдыха",
-                        "create_tasks": False,
-                        "write_to_miro": False,
-                    }
-                ]
-            }
-
+            return {"intents": [{"type": "rest_day", "date": "today" if "сегодня" in lowered else ("tomorrow" if "завтра" in lowered else "today"), "title": "День отдыха", "create_tasks": False, "write_to_miro": False}]}
         if "напомни" in lowered:
-            cleaned = text
-            for marker in ("завтра вечером напомни", "через два дня утром напомни", "через 2 дня утром напомни", "вечером напомни", "завтра напомни", "сегодня напомни", "напомни"):
-                idx = lowered.find(marker)
-                if idx >= 0:
-                    cleaned = text[idx + len(marker) :].strip(" :,-") or text
-                    break
-            return {"intents": [{"type": "create_reminder", "text": cleaned, "date": "today", "time": "evening", "priority": "medium"}]}
-
-        return {
-            "intents": [
-                {
-                    "type": "create_task",
-                    "title": text,
-                    "description": "",
-                    "priority": "medium",
-                    "deadline": None,
-                    "is_minor": False,
-                    "auto_cleanup_allowed": False,
-                }
-            ]
-        }
+            return {"intents": [{"type": "create_reminder", "text": text, "date": "today", "time": "evening", "priority": "medium"}]}
+        return {"intents": [{"type": "create_task", "title": text, "description": "", "priority": "medium", "deadline": None, "is_minor": False, "auto_cleanup_allowed": False}]}

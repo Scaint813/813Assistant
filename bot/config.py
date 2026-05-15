@@ -17,6 +17,8 @@ class Config:
     allowed_user_id: int
     openai_api_key: str
     openai_model: str
+    openai_model_fast: str
+    openai_model_smart: str
     transcription_model: str
     miro_token: str
     miro_board_id: str
@@ -49,7 +51,9 @@ def get_config() -> Config:
         bot_id=int(_required_env("BOT_ID")),
         allowed_user_id=int(_required_env("ALLOWED_USER_ID")),
         openai_api_key=os.getenv("OPENAI_API_KEY", ""),
-        openai_model=os.getenv("OPENAI_MODEL", "gpt-4.1-mini"),
+        openai_model=os.getenv("OPENAI_MODEL", ""),
+        openai_model_fast=os.getenv("OPENAI_MODEL_FAST", "") or os.getenv("OPENAI_MODEL", ""),
+        openai_model_smart=os.getenv("OPENAI_MODEL_SMART", "") or os.getenv("OPENAI_MODEL_FAST", "") or os.getenv("OPENAI_MODEL", ""),
         transcription_model=os.getenv("OPENAI_TRANSCRIPTION_MODEL", "whisper-1"),
         miro_token=os.getenv("MIRO_ACCESS_TOKEN", ""),
         miro_board_id=os.getenv("MIRO_BOARD_ID", ""),

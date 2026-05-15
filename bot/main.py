@@ -40,7 +40,7 @@ async def main() -> None:
     dp.include_router(voice.router)
     dp.include_router(quick_note.router)
 
-    ai_service = AIService(cfg.openai_api_key, cfg.openai_model)
+    ai_service = AIService(cfg.openai_api_key, cfg.openai_model_fast, cfg.openai_model_smart, cfg.openai_model)
     time_service = TimeService(cfg.timezone, cfg.morning_time, cfg.day_time, cfg.evening_time, cfg.night_time)
     intent_parser = IntentParser(ai_service, time_service)
     transcription_service = TranscriptionService(cfg.openai_api_key, cfg.transcription_model)
