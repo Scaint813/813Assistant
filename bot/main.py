@@ -15,6 +15,8 @@ from bot.services.ai_service import AIService
 from bot.services.cleanup_service import CleanupService
 from bot.services.intent_parser import IntentParser
 from bot.services.miro_service import MiroService
+from bot.services.navigation_service import NavigationService
+from bot.services.overload_service import OverloadService
 from bot.services.reminder_scheduler import ReminderScheduler
 from bot.services.time_service import TimeService
 from bot.services.transcription_service import TranscriptionService
@@ -56,6 +58,8 @@ async def main() -> None:
     dp["time_service"] = time_service
     dp["miro_service"] = miro_service
     dp["reminder_scheduler"] = reminder_scheduler
+    dp["navigation_service"] = NavigationService()
+    dp["overload_service"] = OverloadService()
 
     await dp.start_polling(bot)
 

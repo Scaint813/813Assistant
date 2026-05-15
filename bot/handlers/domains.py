@@ -226,3 +226,58 @@ async def sync_miro(message: Message, session_factory, miro_service):
                 reminder.miro_item_id = item_id
         await session.commit()
     await message.answer("Синхронизация Miro завершена.")
+
+
+@router.callback_query(F.data == "main_menu")
+async def main_menu_callback(callback: CallbackQuery, navigation_service):
+    await callback.answer()
+    from bot.keyboards.main_menu import main_menu
+    navigation_service.reset(callback.from_user.id)
+    await callback.message.answer("813Assistant\n\nШтаб открыт.\nВыбери блок или напиши задачу обычным текстом.", reply_markup=main_menu())
+
+
+
+
+@router.callback_query(F.data == "back")
+async def back_callback(callback: CallbackQuery, navigation_service, session_factory, time_service):
+    await callback.answer()
+    screen = navigation_service.back(callback.from_user.id)
+    if screen == "hq":
+        from bot.handlers.menu import render_hq
+        await render_hq(callback.message, session_factory, time_service)
+        return
+    from bot.keyboards.main_menu import main_menu
+    await callback.message.answer("813Assistant\n\nШтаб открыт.\nВыбери блок или напиши задачу обычным текстом.", reply_markup=main_menu())
+@router.callback_query(F.data == "next_step")
+async def next_step_callback(callback: CallbackQuery, session_factory, navigation_service):
+    await callback.answer()
+    navigation_service.push(callback.from_user.id, "next")
+    async with session_factory() as session:
+        tasks = await get_active_tasks(session, callback.from_user.id)
+    picks = [f"{i+1}. {t.title}" for i, t in enumerate(tasks[:3])]
+    body = "\n".join(picks) if picks else "1. Закрыть один мелкий хвост.\n2. Подготовить следующий фокус."
+    await callback.message.answer(f"Следующий шаг:\n\n{body}\n\nОграничение: без лишних задач.")
+
+
+@router.callback_query(F.data == "add_note")
+async def add_note_callback(callback: CallbackQuery):
+    await callback.answer()
+    await callback.message.answer("Принял. Напиши запись обычным текстом.")
+
+
+@router.callback_query(F.data == "overload_rest")
+async def overload_rest(callback: CallbackQuery):
+    await callback.answer()
+    await callback.message.answer("Принял. Экстренный отдых: 20–40 минут без телефона. Потом вернёмся к плану.")
+
+
+@router.callback_query(F.data == "overload_light_plan")
+async def overload_light_plan(callback: CallbackQuery):
+    await callback.answer()
+    await callback.message.answer("СИТУАЦИЯ\nРесурс просел.\n\nВЫВОД\nРаботаем в лёгком режиме.\n\nДЕЙСТВИЕ\n1. Закрыть один обязательный пункт.\n2. Пауза 20 минут.\n3. Вернуться к следующему шагу.")
+
+
+@router.callback_query(F.data == "overload_skip")
+async def overload_skip(callback: CallbackQuery):
+    await callback.answer()
+    await callback.message.answer("Принял.\nРиск перегруза сохраняется.\n\nСобираю план в жёстком режиме:\n1. Закрыть критичный хвост.\n2. Сделать один учебный блок.\n3. Перепроверить ресурс через 2 часа.\n\nОграничение: без лишних задач и без добивания тела.")

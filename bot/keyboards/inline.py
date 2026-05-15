@@ -29,3 +29,23 @@ def reminder_snooze_keyboard(reminder_id: int) -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="Отмена переноса", callback_data=f"reminder_snooze_cancel:{reminder_id}")],
         ]
     )
+
+
+def nav_keyboard(show_add: bool = False) -> InlineKeyboardMarkup:
+    rows = [[InlineKeyboardButton(text="Следующий шаг", callback_data="next_step")]]
+    if show_add:
+        rows.append([InlineKeyboardButton(text="Добавить запись", callback_data="add_note")])
+    rows.append([InlineKeyboardButton(text="Назад", callback_data="back")])
+    rows.append([InlineKeyboardButton(text="Главное меню", callback_data="main_menu")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def overload_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="Экстренный отдых", callback_data="overload_rest")],
+            [InlineKeyboardButton(text="Собрать лёгкий план", callback_data="overload_light_plan")],
+            [InlineKeyboardButton(text="Скипнуть и продолжить", callback_data="overload_skip")],
+            [InlineKeyboardButton(text="Главное меню", callback_data="main_menu")],
+        ]
+    )

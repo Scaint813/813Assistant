@@ -4,19 +4,28 @@ from aiogram import F, Router
 from aiogram.types import Message
 
 from bot.database.queries import create_pending_preview, get_active_tasks, get_reminders_for_date, get_tasks_for_date, get_upcoming_overrides
-from bot.keyboards.inline import confirm_keyboard
+from bot.keyboards.inline import confirm_keyboard, overload_keyboard
 from bot.services.action_preview import render_preview
 
 router = Router()
 
 
 @router.message(F.text & ~F.text.startswith("/"))
-async def capture_text(message: Message, session_factory, intent_parser, time_service):
+async def capture_text(message: Message, session_factory, intent_parser, time_service, overload_service):
+    overload = overload_service.detect_overload(message.text, {})
+    if overload["is_overload"]:
+        await message.answer(
+            "ПЕРЕГРУЗ\n\nРесурс просел.\nСначала стабилизация, потом задачи.\n\n"
+            "Рекомендация:\n1. Вода\n2. Еда\n3. 20–40 минут отдыха без телефона\n4. Проверить тело/боль\n5. Убрать одну необязательную задачу\n6. Сон в приоритет",
+            reply_markup=overload_keyboard(),
+        )
+        return
+
     parsed = await intent_parser.parse_user_text(message.text, context={"session_factory": session_factory, "user_id": message.from_user.id})
     first_intent = (parsed.get("intents") or [{}])[0].get("type")
 
     if first_intent == "do_nothing":
-        await message.answer("Понял, ничего не записываю.")
+        await message.answer("Принял. Ничего не фиксирую.")
         return
 
     if first_intent == "show_today":
