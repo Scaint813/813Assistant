@@ -7,7 +7,6 @@ from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-
 from bot.config import get_config
 from bot.database.migrations import create_schema
 from bot.database.queries import get_all_active_reminders
