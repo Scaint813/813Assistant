@@ -13,6 +13,17 @@ def render_preview(parsed: dict) -> str:
 
     if t in {"schedule_override", "rest_day"}:
         return "Я понял так:\n\n1. Поставить день отдыха.\n2. Не создавать тренировочные задачи.\n3. Ничего не добавлять в Miro.\n\nПодтвердить?"
+    if t == "create_problem_block":
+        return (
+            "СИТУАЦИЯ\n"
+            f"Проблема: {intent.get('problem_text') or intent.get('title')}\n\n"
+            "ВЫВОД\nНужен активный блок с коротким решением.\n\n"
+            "ДЕЙСТВИЕ\n"
+            "1. Создать активный блок решения.\n"
+            f"2. Следующий шаг: {intent.get('next_action')}\n"
+            "3. Добавить блок в /next.\n\n"
+            "Подтвердить?"
+        )
 
     title = intent.get("title") or ""
     return f"Я понял так:\n\n1. Создать задачу:\n{title}\n\nПодтвердить?"

@@ -81,3 +81,15 @@ def quiet_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="Выключить check-ins", callback_data="checkins_disable")],
         [InlineKeyboardButton(text="Отмена", callback_data="quiet_cancel")],
     ])
+
+
+def problem_block_keyboard(block_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Следующий шаг", callback_data="next_step")],
+        [InlineKeyboardButton(text="Ресурсы", callback_data=f"problem_resources:{block_id}")],
+        [InlineKeyboardButton(text="Развернуть", callback_data=f"problem_expand:{block_id}")],
+        [InlineKeyboardButton(text="Сохранить", callback_data=f"problem_done:{block_id}")],
+        [InlineKeyboardButton(text="Архив", callback_data=f"problem_archive:{block_id}")],
+        [InlineKeyboardButton(text="Отложить до завтра", callback_data=f"problem_snooze_tomorrow:{block_id}")],
+        [InlineKeyboardButton(text="Главное меню", callback_data="main_menu")],
+    ])

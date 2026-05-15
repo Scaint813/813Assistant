@@ -11,12 +11,12 @@ logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = """
 Ты — личный AI-ассистент. Возвращай ТОЛЬКО JSON формата {"intents": [...]}.
-Разрешённые intents: create_task, create_reminder, rest_day, show_today, show_tasks, do_nothing.
+Разрешённые intents: create_task, create_reminder, rest_day, show_today, show_tasks, do_nothing, create_problem_block, update_problem_block, complete_problem_block, archive_problem_block, show_problem_blocks, get_problem_solution, get_problem_resources.
 """.strip()
 
 
 class Intent(BaseModel):
-    type: Literal["create_task", "create_reminder", "rest_day", "show_today", "show_tasks", "do_nothing"]
+    type: Literal["create_task", "create_reminder", "rest_day", "show_today", "show_tasks", "do_nothing", "create_problem_block", "update_problem_block", "complete_problem_block", "archive_problem_block", "show_problem_blocks", "get_problem_solution", "get_problem_resources"]
     title: str | None = None
     description: str | None = None
     priority: str | None = "medium"
@@ -30,6 +30,11 @@ class Intent(BaseModel):
     reply: str | None = None
     create_tasks: bool | None = False
     write_to_miro: bool | None = False
+    category: str | None = None
+    problem_text: str | None = None
+    solution_strategy: str | None = None
+    next_action: str | None = None
+    pressure_level: str | None = None
 
 
 class AIResult(BaseModel):
@@ -85,6 +90,21 @@ class AIService:
             return {"intents": [{"type": "show_today"}]}
         if any(p in lowered for p in ("покажи задачи", "что по задачам", "активные задачи")):
             return {"intents": [{"type": "show_tasks"}]}
+        if any(p in lowered for p in ("покажи блоки", "/problems", "/blocks", "активные блоки")):
+            return {"intents": [{"type": "show_problem_blocks"}]}
+        if any(p in lowered for p in ("ошибка", "путаюсь", "срываю", "перегружаюсь", "откладываю", "конфликт")):
+            category = "other"
+            if any(k in lowered for k in ("егэ", "обществ", "экзам")):
+                category = "exam"
+            elif "сон" in lowered:
+                category = "sleep"
+            elif "заказ" in lowered:
+                category = "orders"
+            elif any(k in lowered for k in ("деньг", "оплат", "финанс")):
+                category = "money"
+            elif any(k in lowered for k in ("перегруз", "выгор")):
+                category = "overload"
+            return {"intents": [{"type": "create_problem_block", "category": category, "title": text[:80], "problem_text": text, "solution_strategy": "Разбить проблему на короткий протокол и убрать лишние действия", "next_action": "Сделать один короткий шаг по протоколу", "priority": "high", "pressure_level": "normal"}]}
         if any(p in lowered for p in ("не записывай", "просто подумай", "ничего не сохраняй", "не добавляй")) and "напомни" not in lowered:
             return {"intents": [{"type": "do_nothing", "reply": "Понял, ничего не записываю."}]}
         if any(p in lowered for p in ("отдыхаю", "день отдыха", "ничего не ставь", "без тренировки")):

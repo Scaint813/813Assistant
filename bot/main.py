@@ -17,6 +17,8 @@ from bot.services.intent_parser import IntentParser
 from bot.services.miro_service import MiroService
 from bot.services.navigation_service import NavigationService
 from bot.services.overload_service import OverloadService
+from bot.services.problem_block_service import ProblemBlockService
+from bot.services.problem_resources_service import ProblemResourcesService
 from bot.services.reminder_scheduler import ReminderScheduler
 from bot.services.time_service import TimeService
 from bot.services.transcription_service import TranscriptionService
@@ -60,6 +62,9 @@ async def main() -> None:
     dp["reminder_scheduler"] = reminder_scheduler
     dp["navigation_service"] = NavigationService()
     dp["overload_service"] = OverloadService()
+    dp["problem_block_service"] = ProblemBlockService()
+    dp["problem_resources_service"] = ProblemResourcesService()
+    dp["next_step_service"] = __import__("bot.services.next_step_service", fromlist=["NextStepService"]).NextStepService()
 
     try:
         await dp.start_polling(bot)

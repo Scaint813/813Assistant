@@ -16,8 +16,9 @@ from bot.database.queries import (
     get_upcoming_overrides,
     get_pending_preview,
     get_reminder_by_id,
+    get_problem_block_by_id,
 )
-from bot.keyboards.inline import reminder_snooze_keyboard
+from bot.keyboards.inline import problem_block_keyboard, reminder_snooze_keyboard
 
 router = Router()
 
@@ -35,6 +36,9 @@ async def confirm_preview(callback: CallbackQuery, session_factory, reminder_sch
         payload = json.loads(preview.preview_json)
         created_tasks_by_title = {}
         created_reminders = []
+        created_problem_blocks = []
+        problem_block_service = callback.bot.dispatcher["problem_block_service"]
+        problem_resources_service = callback.bot.dispatcher["problem_resources_service"]
 
         for intent in payload.get("intents", []):
             t = intent.get("type")
@@ -86,6 +90,12 @@ async def confirm_preview(callback: CallbackQuery, session_factory, reminder_sch
                     create_tasks=bool(intent.get("create_tasks", False)),
                     write_to_miro=bool(intent.get("write_to_miro", False)),
                 )
+            elif t == "create_problem_block":
+                resources = problem_resources_service.get_resources(intent.get("category") or "other", intent.get("title") or "", intent.get("problem_text") or "")
+                block = await problem_block_service.create_problem_block(
+                    callback.from_user.id, intent, session, time_service.now(), source_type=preview.source_type, resources=resources
+                )
+                created_problem_blocks.append(block)
 
         preview.status = "confirmed"
         await session.commit()
@@ -103,6 +113,44 @@ async def confirm_preview(callback: CallbackQuery, session_factory, reminder_sch
     elif any(i.get("type") in {"schedule_override", "rest_day"} for i in payload.get("intents", [])):
         reply_text = "Готово, день отдыха сохранён."
     await callback.message.answer(reply_text)
+    for block in created_problem_blocks[:1]:
+        await callback.message.answer("Фиксирую проблему.\nЭто активный блок.\n\nРешение коротко:\n" + problem_block_service.build_problem_solution_summary(block), reply_markup=problem_block_keyboard(block.id))
+
+
+@router.callback_query(F.data.startswith("problem_done:"))
+async def problem_done(callback: CallbackQuery, session_factory, problem_block_service, time_service):
+    await callback.answer()
+    block_id = int(callback.data.split(":", 1)[1])
+    async with session_factory() as session:
+        block = await problem_block_service.complete_problem_block(callback.from_user.id, block_id, session, time_service.now())
+        await session.commit()
+    await callback.message.answer("Блок закрыт." if block else "Блок не найден.")
+
+
+@router.callback_query(F.data.startswith("problem_archive:"))
+async def problem_archive(callback: CallbackQuery, session_factory, problem_block_service, time_service):
+    await callback.answer()
+    block_id = int(callback.data.split(":", 1)[1])
+    async with session_factory() as session:
+        block = await problem_block_service.archive_problem_block(callback.from_user.id, block_id, "manual archive", session, time_service.now())
+        await session.commit()
+    await callback.message.answer("Блок в архиве." if block else "Блок не найден.")
+
+
+@router.callback_query(F.data.startswith("problem_resources:"))
+async def problem_resources(callback: CallbackQuery, session_factory):
+    await callback.answer()
+    block_id = int(callback.data.split(":", 1)[1])
+    async with session_factory() as session:
+        block = await get_problem_block_by_id(session, callback.from_user.id, block_id)
+    if not block:
+        await callback.message.answer("Блок не найден.")
+        return
+    data = json.loads(block.resources_json or "[]")
+    if not data:
+        await callback.message.answer("Готовых ресурсов нет. Блок создан, решение можно уточнить позже.")
+        return
+    await callback.message.answer("Ресурсы:\n" + "\n".join(f"- {r.get('title')}: {r.get('note')}" for r in data[:4]))
 
 
 @router.callback_query(F.data.startswith("cancel_preview:"))

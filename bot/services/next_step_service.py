@@ -9,6 +9,13 @@ class NextStepService:
     MONEY_WORDS = {"оплат", "деньг", "заказ", "клиент"}
 
     async def build_next_step(self, user_id: int, session, now, overload: dict | None = None) -> dict:
+        await session.flush()
+        problem_block_service = None
+        try:
+            from bot.services.problem_block_service import ProblemBlockService
+            problem_block_service = ProblemBlockService()
+        except Exception:
+            problem_block_service = None
         if overload and overload.get("is_overload"):
             return {
                 "mode": "overload",
@@ -81,6 +88,12 @@ class NextStepService:
         if near:
             actions.append(f"Подготовить напоминание: {near[0].text}.")
             related.append({"type": "reminder", "id": near[0].id})
+        if problem_block_service:
+            due_blocks = await problem_block_service.get_due_problem_blocks(user_id, session, now)
+            if due_blocks:
+                b = due_blocks[0]
+                actions.append(f"Закрыть блок: {b.title}.")
+                actions.append(b.next_action)
 
         for _, t in ranked:
             if len(actions) >= 3:

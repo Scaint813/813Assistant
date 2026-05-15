@@ -6,7 +6,7 @@ from datetime import date, datetime, timedelta
 from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from bot.database.models import CleanupLog, PendingPreview, Reminder, ScheduleOverride, Task, UserProfile, UserRuntimeState
+from bot.database.models import CleanupLog, PendingPreview, ProblemBlock, ProblemBlockEvent, Reminder, ScheduleOverride, Task, UserProfile, UserRuntimeState
 
 
 async def get_or_create_user_profile(session: AsyncSession, user_id: int, name: str, timezone: str) -> UserProfile:
@@ -145,4 +145,36 @@ async def archive_task(session: AsyncSession, task: Task, reason: str, now: date
 
 async def get_archived_tasks(session: AsyncSession, user_id: int) -> list[Task]:
     res = await session.execute(select(Task).where(and_(Task.user_id == user_id, Task.status == "archived")).order_by(Task.archived_at.desc()))
+    return list(res.scalars().all())
+
+
+async def create_problem_block(session: AsyncSession, user_id: int, **kwargs) -> ProblemBlock:
+    item = ProblemBlock(user_id=user_id, **kwargs)
+    session.add(item)
+    await session.flush()
+    return item
+
+
+async def add_problem_event(session: AsyncSession, user_id: int, problem_block_id: int, event_type: str, comment: str = "") -> ProblemBlockEvent:
+    event = ProblemBlockEvent(user_id=user_id, problem_block_id=problem_block_id, event_type=event_type, comment=comment)
+    session.add(event)
+    await session.flush()
+    return event
+
+
+async def get_problem_block_by_id(session: AsyncSession, user_id: int, block_id: int) -> ProblemBlock | None:
+    res = await session.execute(select(ProblemBlock).where(and_(ProblemBlock.user_id == user_id, ProblemBlock.id == block_id)))
+    return res.scalar_one_or_none()
+
+
+async def get_active_problem_blocks(session: AsyncSession, user_id: int, now: datetime) -> list[ProblemBlock]:
+    res = await session.execute(
+        select(ProblemBlock).where(
+            and_(
+                ProblemBlock.user_id == user_id,
+                ProblemBlock.status == "active",
+                (ProblemBlock.deadline.is_(None) | (ProblemBlock.deadline >= now)),
+            )
+        ).order_by(ProblemBlock.priority.desc(), ProblemBlock.created_at.desc())
+    )
     return list(res.scalars().all())

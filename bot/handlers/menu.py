@@ -51,10 +51,29 @@ async def today(message: Message, session_factory, time_service, navigation_serv
 async def next_step(message: Message, session_factory, time_service, navigation_service):
     navigation_service.push(message.from_user.id, "next")
     async with session_factory() as session:
-        tasks = await get_active_tasks(session, message.from_user.id)
-    picks = [f"{i+1}. {t.title}" for i, t in enumerate(tasks[:3])]
-    body = "\n".join(picks) if picks else "1. Закрыть один мелкий хвост.\n2. Подготовить следующий фокус." 
+        payload = await message.bot.dispatcher["next_step_service"].build_next_step(message.from_user.id, session, time_service.now())
+    picks = [f"{i+1}. {p}" for i, p in enumerate(payload.get("actions", [])[:3])]
+    body = "\n".join(picks) if picks else "1. Закрыть один мелкий хвост.\n2. Подготовить следующий фокус."
     await message.answer(f"Следующий шаг:\n\n{body}\n\nОграничение: без лишних задач.", reply_markup=nav_keyboard())
+
+
+@router.message(Command("problems"))
+@router.message(Command("blocks"))
+async def problems(message: Message, session_factory, time_service):
+    async with session_factory() as session:
+        service = message.bot.dispatcher["problem_block_service"]
+        await service.archive_expired_problem_blocks(message.from_user.id, session, time_service.now())
+        blocks = await service.get_active_problem_blocks(message.from_user.id, session, time_service.now())
+        await session.commit()
+    if not blocks:
+        await message.answer("АКТИВНЫЕ БЛОКИ\n\n- нет активных.")
+        return
+    lines = ["АКТИВНЫЕ БЛОКИ", ""]
+    for i, b in enumerate(blocks[:10]):
+        lines.append(f"{i+1}. {b.title}")
+        lines.append(f"   Категория: {b.category}")
+        lines.append(f"   Следующий шаг: {b.next_action}")
+    await message.answer("\n".join(lines))
 
 
 @router.message(Command("tasks"))

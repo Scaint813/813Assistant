@@ -26,7 +26,7 @@ class IntentParser:
         for intent in intents:
             item = dict(intent)
             t = item.get("type")
-            if t not in {"create_task", "create_reminder", "rest_day", "show_today", "show_tasks", "do_nothing"}:
+            if t not in {"create_task", "create_reminder", "rest_day", "show_today", "show_tasks", "do_nothing", "create_problem_block", "update_problem_block", "complete_problem_block", "archive_problem_block", "show_problem_blocks", "get_problem_solution", "get_problem_resources"}:
                 return {"transcript": text, "intents": self.ai_service.parse_intent_fallback(text).get("intents", [])}
 
             if t == "create_reminder":
@@ -46,6 +46,18 @@ class IntentParser:
                 item["mode"] = "rest_day"
                 item["create_tasks"] = False
                 item["write_to_miro"] = False
+            if t == "create_problem_block":
+                item["category"] = item.get("category") or "other"
+                item["priority"] = item.get("priority") or "medium"
+                item["pressure_level"] = item.get("pressure_level") or "normal"
+                item["title"] = item.get("title") or text[:90]
+                item["problem_text"] = item.get("problem_text") or text
+                item["solution_strategy"] = item.get("solution_strategy") or "Короткий протокол решения."
+                item["next_action"] = item.get("next_action") or "Сделать один короткий шаг."
+                if item.get("deadline"):
+                    parsed_deadline = self.time_service.parse_datetime_any(item.get("deadline"))
+                    if parsed_deadline:
+                        item["deadline"] = parsed_deadline.isoformat()
 
             normalized.append(item)
 
