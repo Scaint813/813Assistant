@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import logging
-
 from datetime import datetime
 from typing import Any, Literal
 
@@ -10,7 +9,6 @@ import httpx
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
-
 
 SYSTEM_PROMPT = """
 Ты — личный AI-ассистент. Возвращай ТОЛЬКО JSON формата {"intents": [...]}.
@@ -37,24 +35,6 @@ class Intent(BaseModel):
     create_tasks: bool | None = False
     write_to_miro: bool | None = False
 
-SYSTEM_PROMPT = """Ты — личный AI-ассистент пользователя. Верни только JSON формата {\"intents\": [...]} без пояснений."""
-
-
-class Intent(BaseModel):
-    type: Literal["create_task", "create_reminder", "schedule_override", "rest_day", "do_nothing"]
-    text: str | None = None
-    title: str | None = None
-    description: str | None = None
-    date: str | None = None
-    time: str | None = None
-    priority: str | None = "medium"
-    mode: str | None = None
-    create_tasks: bool | None = True
-    write_to_miro: bool | None = False
-    is_minor: bool | None = False
-    auto_cleanup_allowed: bool | None = False
-
-
 
 class AIResult(BaseModel):
     intents: list[Intent] = Field(default_factory=list)
@@ -69,10 +49,6 @@ class AIService:
         if not self.api_key:
             logger.info("OPENAI_API_KEY is not configured; using fallback parser")
             return None
-
-    async def parse_intents(self, text: str, context: dict[str, Any]) -> dict[str, Any]:
-        if not self.api_key:
-            return self._fallback(text)
         payload = {
             "model": self.model,
             "messages": [

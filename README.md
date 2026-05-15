@@ -28,6 +28,15 @@
 2. Заполните переменные.
 3. `.env` не коммитить.
 
+
+## Голосовые сообщения
+- Бот принимает Telegram voice-сообщения.
+- Скачивает audio во временный файл.
+- Отправляет файл в OpenAI transcription (`OPENAI_TRANSCRIPTION_MODEL`, по умолчанию `whisper-1`).
+- Передаёт расшифровку в тот же intent parser, что и текст.
+- Перед любой записью в БД показывает Action Preview.
+- Запись выполняется только после подтверждения.
+
 ## Подключение OpenAI
 1. Создайте API key в OpenAI Platform.
 2. Укажите `OPENAI_API_KEY` в `.env`.
@@ -50,14 +59,5 @@ python -m bot.main
 ## Development checks
 ```bash
 bash scripts_check_no_conflicts.sh
-
-AI Telegram assistant bot scaffold on aiogram 3.x with SQLite, APScheduler, OpenAI-compatible LLM/STT and Miro sync.
-
-## Development checks
-
-```bash
-./scripts_check_no_conflicts.sh
-
-
 python -m compileall .
 ```

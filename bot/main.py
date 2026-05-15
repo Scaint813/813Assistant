@@ -12,8 +12,6 @@ from bot.database.migrations import create_schema
 from bot.database.queries import get_all_active_reminders
 from bot.handlers import domains, menu, quick_note, reminders, start, voice
 from bot.middlewares import AccessMiddleware
-
-from bot.handlers import domains, menu, quick_note, reminders, start, voice
 from bot.services.ai_service import AIService
 from bot.services.cleanup_service import CleanupService
 from bot.services.intent_parser import IntentParser
@@ -53,27 +51,6 @@ async def main() -> None:
     async with session_factory() as session:
         reminders_list = await get_all_active_reminders(session)
     await reminder_scheduler.load_from_db(reminders_list)
-
-    dp["config"] = cfg
-    dp["session_factory"] = session_factory
-    dp["intent_parser"] = intent_parser
-    dp["transcription_service"] = transcription_service
-    dp["cleanup_service"] = CleanupService()
-    dp["time_service"] = time_service
-    dp["miro_service"] = miro_service
-    dp["reminder_scheduler"] = reminder_scheduler
-
-
-
-
-
-    bot = Bot(token=cfg.bot_token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
-    reminder_scheduler = ReminderScheduler(cfg.timezone, bot, session_factory)
-    reminder_scheduler.start()
-    async with session_factory() as session:
-        reminders_list = await get_all_active_reminders(session)
-    await reminder_scheduler.load_from_db(reminders_list)
-
 
     dp["config"] = cfg
     dp["session_factory"] = session_factory
