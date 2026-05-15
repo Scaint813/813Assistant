@@ -61,7 +61,10 @@ async def main() -> None:
     dp["navigation_service"] = NavigationService()
     dp["overload_service"] = OverloadService()
 
-    await dp.start_polling(bot)
+    try:
+        await dp.start_polling(bot)
+    finally:
+        reminder_scheduler.shutdown_scheduler()
 
 
 if __name__ == "__main__":

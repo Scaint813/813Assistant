@@ -99,7 +99,7 @@ async def confirm_preview(callback: CallbackQuery, session_factory, reminder_sch
         if any(r.remind_at <= time_service.now() for r in created_reminders):
             reply_text = "Напоминание создано, но время уже прошло. Проверь дату/время."
         else:
-            reply_text = "Готово, напоминание создано."
+            reply_text = "Готово. Напоминание создано."
     elif any(i.get("type") in {"schedule_override", "rest_day"} for i in payload.get("intents", [])):
         reply_text = "Готово, день отдыха сохранён."
     await callback.message.answer(reply_text)
@@ -129,7 +129,7 @@ async def reminder_done(callback: CallbackQuery, session_factory, reminder_sched
         reminder.status = "done"
         await session.commit()
     reminder_scheduler.cancel_reminder_job(reminder_id)
-    await callback.message.answer("Готово, напоминание закрыто.")
+    await callback.message.answer("Готово. Напоминание закрыто.")
 
 
 @router.callback_query(F.data.startswith("reminder_cancel:"))
@@ -162,17 +162,18 @@ async def _apply_snooze(callback: CallbackQuery, session_factory, reminder_sched
             return
         now = time_service.now()
         if mode == "1h":
-            reminder.remind_at = now + timedelta(hours=1)
+            new_time = now + timedelta(hours=1)
         elif mode == "evening":
             candidate = time_service.build_datetime("today", "evening")
-            reminder.remind_at = candidate if candidate > now else time_service.build_datetime("tomorrow", "evening")
+            new_time = candidate if candidate > now else time_service.build_datetime("tomorrow", "evening")
         else:
-            reminder.remind_at = time_service.build_datetime("tomorrow", "morning")
-        reminder.status = "active"
-        await session.commit()
-    reminder_scheduler.cancel_reminder_job(reminder_id)
-    reminder_scheduler.schedule_reminder(reminder)
-    await callback.message.answer(f"Перенёс на {reminder.remind_at.strftime('%H:%M')}.")
+            new_time = time_service.build_datetime("tomorrow", "morning")
+
+    updated = await reminder_scheduler.reschedule_reminder(reminder_id, new_time)
+    if not updated:
+        await callback.message.answer("Напоминание не найдено.")
+        return
+    await callback.message.answer(f"Перенёс на {updated.remind_at.strftime('%H:%M')}.")
 
 
 @router.callback_query(F.data.startswith("reminder_snooze_1h:"))

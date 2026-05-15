@@ -5,7 +5,8 @@ from datetime import datetime
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-from bot.database.queries import get_all_active_reminders, get_reminder_by_id
+from bot.database.models import Reminder
+from bot.database.queries import get_all_active_reminders
 from bot.keyboards.inline import reminder_keyboard
 
 logger = logging.getLogger(__name__)
@@ -16,6 +17,7 @@ class ReminderScheduler:
         self.scheduler = AsyncIOScheduler(timezone=tz)
         self.bot = bot
         self.session_factory = session_factory
+        self.tz = tz
 
     async def start_scheduler(self):
         if not self.scheduler.running:
@@ -25,29 +27,45 @@ class ReminderScheduler:
         for reminder in reminders:
             self.schedule_reminder(reminder)
 
-    def schedule_reminder(self, reminder):
-        now = datetime.now(tz=reminder.remind_at.tzinfo) if reminder.remind_at.tzinfo else datetime.utcnow()
-        if reminder.remind_at <= now:
+    def shutdown_scheduler(self):
+        if self.scheduler.running:
+            self.scheduler.shutdown(wait=False)
+
+    def _normalize_dt(self, dt: datetime) -> datetime:
+        return dt if dt.tzinfo else dt.replace(tzinfo=self.tz)
+
+    def schedule_reminder(self, reminder: Reminder):
+        remind_at = self._normalize_dt(reminder.remind_at)
+        now = datetime.now(tz=self.tz)
+        if remind_at <= now:
+            return
+        if not self.scheduler.running:
+            logger.error("Scheduler not running; reminder %s saved but not scheduled", reminder.id)
             return
         self.scheduler.add_job(
             self.send_reminder,
             "date",
-            run_date=reminder.remind_at,
+            run_date=remind_at,
             args=[reminder.id],
             id=f"reminder:{reminder.id}",
             replace_existing=True,
         )
 
-    async def reschedule_reminder(self, reminder_id: int, new_remind_at):
+    async def reschedule_reminder(self, reminder_id: int, new_remind_at: datetime):
+        new_remind_at = self._normalize_dt(new_remind_at)
         async with self.session_factory() as session:
-            reminder = await get_reminder_by_id(session, None, reminder_id) if False else None
-        # rescheduling from handlers updates DB first, so this is job-only helper
+            reminder = await session.get(Reminder, reminder_id)
+            if not reminder:
+                logger.warning("Reminder not found for reschedule: %s", reminder_id)
+                self.cancel_reminder_job(reminder_id)
+                return None
+            reminder.remind_at = new_remind_at
+            reminder.status = "active"
+            await session.commit()
+            await session.refresh(reminder)
         self.cancel_reminder_job(reminder_id)
-        class _Tmp: pass
-        tmp = _Tmp()
-        tmp.id = reminder_id
-        tmp.remind_at = new_remind_at
-        self.schedule_reminder(tmp)
+        self.schedule_reminder(reminder)
+        return reminder
 
     def cancel_reminder_job(self, reminder_id: int):
         job = self.scheduler.get_job(f"reminder:{reminder_id}")
@@ -57,11 +75,7 @@ class ReminderScheduler:
     async def send_reminder(self, reminder_id: int):
         try:
             async with self.session_factory() as session:
-                from bot.database.models import Reminder
-                from sqlalchemy import and_, select
-
-                res = await session.execute(select(Reminder).where(and_(Reminder.id == reminder_id)))
-                reminder = res.scalar_one_or_none()
+                reminder = await session.get(Reminder, reminder_id)
                 if not reminder:
                     logger.warning("Reminder not found for job reminder:%s", reminder_id)
                     self.cancel_reminder_job(reminder_id)
