@@ -50,5 +50,12 @@ python -m bot.main
 ## Development checks
 ```bash
 bash scripts_check_no_conflicts.sh
+AI Telegram assistant bot scaffold on aiogram 3.x with SQLite, APScheduler, OpenAI-compatible LLM/STT and Miro sync.
+
+## Development checks
+
+```bash
+./scripts_check_no_conflicts.sh
+
 python -m compileall .
 ```
