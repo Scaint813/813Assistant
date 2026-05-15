@@ -13,6 +13,8 @@ from bot.database.migrations import create_schema
 from bot.database.queries import get_all_active_reminders
 from bot.handlers import domains, menu, quick_note, reminders, start, voice
 from bot.middlewares import AccessMiddleware
+
+from bot.handlers import domains, menu, quick_note, reminders, start, voice
 from bot.services.ai_service import AIService
 from bot.services.cleanup_service import CleanupService
 from bot.services.intent_parser import IntentParser
