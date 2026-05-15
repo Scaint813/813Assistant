@@ -1,3 +1,90 @@
 # 813Assistant
 
-AI Telegram assistant bot scaffold on aiogram 3.x with SQLite, APScheduler, OpenAI-compatible LLM/STT and Miro sync.
+Личный Telegram AI-ассистент (MVP) на aiogram 3.x.
+
+## Что умеет MVP
+- Ограничение доступа по `ALLOWED_USER_ID`.
+- Текст/voice -> AI intent parser -> Action Preview -> Confirm -> запись в SQLite.
+- Intents: `create_task`, `create_reminder`, `schedule_override`, `rest_day`, `do_nothing`.
+- Команды чтения: `/today`, `/tasks`, `/reminders`, `/schedule`, `/help`.
+- Автоархив: `/cleanup` (учитывает активные связанные напоминания).
+- Синхронизация Miro: `/sync_miro`.
+- Планировщик напоминаний APScheduler с отправкой в Telegram.
+
+## Напоминания
+- Создаются естественным текстом: `завтра вечером напомни проверить оплату Артёма`.
+- Могут создаваться из voice после расшифровки.
+- После подтверждения preview напоминание сохраняется в БД и, если время в будущем, ставится в APScheduler.
+- При старте бота все активные будущие напоминания заново планируются.
+- В момент срабатывания бот отправляет сообщение в личку:
+  - `[Готово]` -> закрыть напоминание
+  - `[Перенести]` -> меню переноса
+  - `[Отмена]` -> отменить напоминание
+- Список: `/reminders` (показывает время, статус и пометку просрочки).
+
+## Настройка `.env`
+1. Скопируйте `.env.example` в `.env`.
+2. Заполните переменные.
+3. `.env` не коммитить.
+
+
+## Голосовые сообщения
+- Бот принимает Telegram voice-сообщения.
+- Скачивает audio во временный файл.
+- Отправляет файл в OpenAI transcription (`OPENAI_TRANSCRIPTION_MODEL`, по умолчанию `whisper-1`).
+- Передаёт расшифровку в тот же intent parser, что и текст.
+- Перед любой записью в БД показывает Action Preview.
+- Запись выполняется только после подтверждения.
+
+## Подключение OpenAI
+1. Создайте API key в OpenAI Platform.
+2. Укажите `OPENAI_API_KEY` в `.env`.
+3. Настройте модели:
+   - `OPENAI_MODEL_FAST` для простых intent-задач
+   - `OPENAI_MODEL_SMART` для сложного анализа/планирования
+   - `OPENAI_MODEL` как обратная совместимость/fallback
+   - `OPENAI_TRANSCRIPTION_MODEL` для voice транскрибации
+
+## Подключение Miro
+1. Создайте Miro app и получите token.
+2. Укажите `MIRO_ACCESS_TOKEN`.
+3. Укажите `MIRO_BOARD_ID`.
+4. Укажите `MIRO_AI_ZONE_START_X/Y` (AI-зона правее ручной зоны).
+
+## Запуск
+```bash
+python -m bot.main
+```
+
+## Команды
+`/start /today /tasks /reminders /schedule /help /cleanup /sync_miro`
+
+## Development checks
+```bash
+bash scripts_check_no_conflicts.sh
+python -m compileall .
+```
+
+
+## UIX: Штаб
+- `/start` открывает короткое меню штаба с блоками и свободным вводом.
+- Кнопка `Штаб` показывает краткую сводку: режим дня, фокус, задачи, напоминания, риски.
+- Кнопка `/next` или `Следующий шаг` даёт 1–3 действия без перегруза.
+- При признаках перегруза бот показывает экран стабилизации с кнопками: `Экстренный отдых`, `Собрать лёгкий план`, `Скипнуть и продолжить`.
+- Для inline-навигации есть `Назад` и `Главное меню`.
+
+
+## Miro структура штаба
+- Бот использует AI-зону только правее `MIRO_AI_ZONE_START_X`.
+- `/sync_miro` создаёт/обновляет заголовки фреймов и данные по блокам:
+  - `ШТАБ/TODAY`, `ЗАДАЧИ/TASKS`, `НАПОМИНАНИЯ/REMINDERS`, `РАСПИСАНИЕ/SCHEDULE`, `АРХИВ/ARCHIVE`.
+- Остальные фреймы (`MONEY/ORDERS/STUDY/BODY/PROTOCOLS`) создаются как заготовки.
+- Дубли предотвращаются через повторное использование `miro_item_id` у задач/напоминаний.
+- Если Miro не настроен, `/sync_miro` возвращает короткую ошибку, остальной бот продолжает работать.
+
+## Выбор OpenAI-модели
+- Простые intent-задачи идут через `OPENAI_MODEL_FAST`.
+- Сложные анализ/планирование/перегруз/next-step маршрутизируются в `OPENAI_MODEL_SMART`.
+- Если SMART не задана — fallback в FAST.
+- Если FAST не задана — fallback в `OPENAI_MODEL`.
+- Если модели не заданы или OpenAI недоступен — rule-based parser fallback.
