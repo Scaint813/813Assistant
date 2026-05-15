@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from aiogram import BaseMiddleware
+from bot.database.queries import touch_user_activity
 
 
 class AccessMiddleware(BaseMiddleware):
@@ -14,4 +15,10 @@ class AccessMiddleware(BaseMiddleware):
             if hasattr(target, "answer"):
                 await target.answer("Доступ закрыт.")
             return
+        session_factory = data.get("session_factory")
+        time_service = data.get("time_service")
+        if session_factory and from_user and time_service:
+            async with session_factory() as session:
+                await touch_user_activity(session, from_user.id, time_service.now())
+                await session.commit()
         return await handler(event, data)

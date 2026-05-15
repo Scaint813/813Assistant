@@ -67,9 +67,13 @@ def next_step_keyboard(entity: dict | None = None) -> InlineKeyboardMarkup:
 
 def checkin_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Собрать день", callback_data="checkin_build_day")],
+        [InlineKeyboardButton(text="Сон плохой", callback_data="checkin_sleep_bad")],
         [InlineKeyboardButton(text="Всё планово", callback_data="checkin_all_ok")],
         [InlineKeyboardButton(text="Следующий шаг", callback_data="checkin_next_step")],
         [InlineKeyboardButton(text="Перегруз", callback_data="checkin_overload")],
+        [InlineKeyboardButton(text="Закрыть день", callback_data="checkin_close_day")],
+        [InlineKeyboardButton(text="Перенести задачи", callback_data="checkin_move_tasks")],
         [InlineKeyboardButton(text="Тихий режим", callback_data="quiet_mode")],
     ])
 

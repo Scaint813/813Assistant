@@ -13,6 +13,7 @@ from bot.handlers import domains, menu, quick_note, reminders, start, voice
 from bot.middlewares import AccessMiddleware
 from bot.services.ai_service import AIService
 from bot.services.cleanup_service import CleanupService
+from bot.services.checkin_service import CheckinService
 from bot.services.intent_parser import IntentParser
 from bot.services.miro_service import MiroService
 from bot.services.navigation_service import NavigationService
@@ -65,6 +66,20 @@ async def main() -> None:
     dp["problem_block_service"] = ProblemBlockService()
     dp["problem_resources_service"] = ProblemResourcesService()
     dp["next_step_service"] = __import__("bot.services.next_step_service", fromlist=["NextStepService"]).NextStepService()
+    dp["checkin_service"] = CheckinService(
+        reminder_scheduler.scheduler,
+        session_factory,
+        time_service,
+        dp["problem_block_service"],
+        dp["next_step_service"],
+        dp["overload_service"],
+        cfg.allowed_user_id,
+        cfg.checkin_enabled,
+        cfg.checkin_morning_time,
+        cfg.checkin_day_time,
+        cfg.checkin_evening_time,
+    )
+    dp["checkin_service"].schedule_daily_checkins(bot)
 
     try:
         await dp.start_polling(bot)

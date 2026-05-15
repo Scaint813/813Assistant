@@ -108,3 +108,20 @@ python -m compileall .
 - Snooze меняет `next_review_at`, оставляет блок `active` и пишет событие `snoozed`.
 - Check-ins учитывают problem blocks и показывают максимум один активный блок за check-in.
 - Если `next_review_at` в будущем или дедлайн прошёл, блок не подмешивается в check-in.
+
+## Плановые check-ins
+- Бот автоматически отправляет проверки утром/днём/вечером через общий APScheduler (тот же instance, что и reminders).
+- Проверяется quiet mode, checkin_enabled, недавняя активность пользователя и частота отправки, чтобы не спамить.
+- В check-in подмешивается максимум один active problem block (если due), иначе отправляется базовая проверка.
+- Quiet mode управляется кнопками: `quiet_2h`, `quiet_until_tomorrow`, `checkins_disable`, `quiet_cancel`.
+
+Переменные:
+- `CHECKIN_ENABLED=true|false`
+- `CHECKIN_MORNING_TIME=09:30`
+- `CHECKIN_DAY_TIME=14:30`
+- `CHECKIN_EVENING_TIME=21:30`
+
+Ручной тест:
+1. Поставьте `CHECKIN_DAY_TIME` на ближайшие 2 минуты.
+2. Запустите бота.
+3. Дождитесь автоматического check-in сообщения.

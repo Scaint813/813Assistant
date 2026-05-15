@@ -15,10 +15,11 @@ from bot.database.queries import (
     get_archived_tasks,
     get_upcoming_overrides,
     get_pending_preview,
+    get_or_create_runtime_state,
     get_reminder_by_id,
     get_problem_block_by_id,
 )
-from bot.keyboards.inline import problem_block_keyboard, problem_snooze_keyboard, reminder_snooze_keyboard
+from bot.keyboards.inline import overload_keyboard, problem_block_keyboard, problem_snooze_keyboard, reminder_snooze_keyboard
 
 router = Router()
 
@@ -231,6 +232,92 @@ async def problem_keep_active(callback: CallbackQuery, session_factory):
             block.status = "active"
         await session.commit()
     await callback.message.answer("Оставил активным." if block else "Блок не найден или уже закрыт.")
+
+
+@router.callback_query(F.data == "quiet_mode")
+async def quiet_mode(callback: CallbackQuery):
+    await callback.answer()
+    from bot.keyboards.inline import quiet_keyboard
+    await callback.message.answer("Тихий режим:", reply_markup=quiet_keyboard())
+
+
+@router.callback_query(F.data == "quiet_2h")
+async def quiet_2h(callback: CallbackQuery, session_factory, checkin_service):
+    await callback.answer()
+    async with session_factory() as session:
+        await checkin_service.set_quiet_2h(callback.from_user.id, session)
+        await session.commit()
+    await callback.message.answer("Тихий режим на 2 часа.")
+
+
+@router.callback_query(F.data == "quiet_until_tomorrow")
+async def quiet_until_tomorrow(callback: CallbackQuery, session_factory, checkin_service):
+    await callback.answer()
+    async with session_factory() as session:
+        await checkin_service.set_quiet_until_tomorrow(callback.from_user.id, session)
+        await session.commit()
+    await callback.message.answer("Тихий режим до завтра.")
+
+
+@router.callback_query(F.data == "checkins_disable")
+async def checkins_disable(callback: CallbackQuery, session_factory, checkin_service):
+    await callback.answer()
+    async with session_factory() as session:
+        await checkin_service.disable_checkins(callback.from_user.id, session)
+        await session.commit()
+    await callback.message.answer("Плановые проверки выключены.")
+
+
+@router.callback_query(F.data == "quiet_cancel")
+async def quiet_cancel(callback: CallbackQuery):
+    await callback.answer()
+    await callback.message.answer("Отменено.")
+
+
+@router.callback_query(F.data == "checkin_all_ok")
+async def checkin_all_ok(callback: CallbackQuery, session_factory, time_service):
+    await callback.answer()
+    async with session_factory() as session:
+        state = await get_or_create_runtime_state(session, callback.from_user.id)
+        state.last_checkin_at = time_service.now()
+        await session.commit()
+    await callback.message.answer("Принял. День идёт планово.")
+
+
+@router.callback_query(F.data.in_({"checkin_build_day", "checkin_next_step"}))
+async def checkin_next_step(callback: CallbackQuery, session_factory, time_service):
+    await callback.answer()
+    async with session_factory() as session:
+        payload = await callback.bot.dispatcher["next_step_service"].build_next_step(callback.from_user.id, session, time_service.now())
+    body = "\n".join(f"{i+1}. {a}" for i, a in enumerate(payload.get("actions", [])[:3])) or "1. Один короткий шаг."
+    await callback.message.answer(f"Следующий шаг:\n\n{body}")
+
+
+@router.callback_query(F.data == "checkin_overload")
+async def checkin_overload(callback: CallbackQuery):
+    await callback.answer()
+    await callback.message.answer("ПЕРЕГРУЗ\n\nРесурс просел.\n1. Вода.\n2. Еда.\n3. 20–40 минут отдыха без телефона.", reply_markup=overload_keyboard())
+
+
+@router.callback_query(F.data == "checkin_sleep_bad")
+async def checkin_sleep_bad(callback: CallbackQuery):
+    await callback.answer()
+    await callback.message.answer("Сон просел.\n\nСегодня без добивания.\nСледующий шаг:\n1. Вода.\n2. Еда.\n3. Одна главная задача.")
+
+
+@router.callback_query(F.data == "checkin_close_day")
+async def checkin_close_day(callback: CallbackQuery):
+    await callback.answer()
+    await callback.message.answer("Закрываем день.\n\nЧто фиксируем?\n1. Сделано\n2. Перенести\n3. Сон/тело\n4. Завтрашний фокус")
+
+
+@router.callback_query(F.data == "checkin_move_tasks")
+async def checkin_move_tasks(callback: CallbackQuery, session_factory):
+    await callback.answer()
+    async with session_factory() as session:
+        tasks = await get_active_tasks(session, callback.from_user.id)
+    lines = [f"- {t.title}" for t in tasks[:10]] or ["- нет активных задач"]
+    await callback.message.answer("Активные задачи для переноса:\n" + "\n".join(lines) + "\n\nПодтверди перенос отдельной командой/действием.")
 
 
 @router.callback_query(F.data.startswith("cancel_preview:"))

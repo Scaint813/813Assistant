@@ -30,7 +30,10 @@ class Config:
     evening_time: time
     night_time: time
     database_url: str
-
+    checkin_enabled: bool
+    checkin_morning_time: time
+    checkin_day_time: time
+    checkin_evening_time: time
 
 def _parse_time(key: str, default: str) -> time:
     raw = os.getenv(key, default)
@@ -65,4 +68,8 @@ def get_config() -> Config:
         evening_time=_parse_time("DEFAULT_EVENING_TIME", "19:00"),
         night_time=_parse_time("DEFAULT_NIGHT_TIME", "22:00"),
         database_url=os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./assistant.db"),
+        checkin_enabled=os.getenv("CHECKIN_ENABLED", "true").lower() == "true",
+        checkin_morning_time=_parse_time("CHECKIN_MORNING_TIME", "09:30"),
+        checkin_day_time=_parse_time("CHECKIN_DAY_TIME", "14:30"),
+        checkin_evening_time=_parse_time("CHECKIN_EVENING_TIME", "21:30"),
     )
