@@ -49,3 +49,35 @@ def overload_keyboard() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="Главное меню", callback_data="main_menu")],
         ]
     )
+
+
+def next_step_keyboard(entity: dict | None = None) -> InlineKeyboardMarkup:
+    rows = []
+    if entity and entity.get("type") == "task":
+        rows.append([InlineKeyboardButton(text="Выполнено", callback_data=f"task_done:{entity['id']}")])
+    elif entity and entity.get("type") == "reminder":
+        rows.append([InlineKeyboardButton(text="Выполнено", callback_data=f"reminder_done:{entity['id']}")])
+    rows.extend([
+        [InlineKeyboardButton(text="Следующий шаг", callback_data="next_step")],
+        [InlineKeyboardButton(text="Штаб", callback_data="go_hq")],
+        [InlineKeyboardButton(text="Главное меню", callback_data="main_menu")],
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def checkin_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Всё планово", callback_data="checkin_all_ok")],
+        [InlineKeyboardButton(text="Следующий шаг", callback_data="checkin_next_step")],
+        [InlineKeyboardButton(text="Перегруз", callback_data="checkin_overload")],
+        [InlineKeyboardButton(text="Тихий режим", callback_data="quiet_mode")],
+    ])
+
+
+def quiet_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="На 2 часа", callback_data="quiet_2h")],
+        [InlineKeyboardButton(text="До завтра", callback_data="quiet_until_tomorrow")],
+        [InlineKeyboardButton(text="Выключить check-ins", callback_data="checkins_disable")],
+        [InlineKeyboardButton(text="Отмена", callback_data="quiet_cancel")],
+    ])

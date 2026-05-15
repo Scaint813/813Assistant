@@ -25,6 +25,16 @@ class UserProfile(Base, TimestampMixin):
     preferences_json: Mapped[str] = mapped_column(Text, default="{}")
 
 
+class UserRuntimeState(Base, TimestampMixin):
+    __tablename__ = "user_runtime_state"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(Integer, unique=True, index=True)
+    last_user_activity_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_checkin_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    quiet_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    checkin_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
 class Task(Base, TimestampMixin):
     __tablename__ = "tasks"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)

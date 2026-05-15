@@ -6,7 +6,7 @@ from datetime import date, datetime, timedelta
 from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from bot.database.models import CleanupLog, PendingPreview, Reminder, ScheduleOverride, Task, UserProfile
+from bot.database.models import CleanupLog, PendingPreview, Reminder, ScheduleOverride, Task, UserProfile, UserRuntimeState
 
 
 async def get_or_create_user_profile(session: AsyncSession, user_id: int, name: str, timezone: str) -> UserProfile:
@@ -18,6 +18,23 @@ async def get_or_create_user_profile(session: AsyncSession, user_id: int, name: 
     session.add(profile)
     await session.flush()
     return profile
+
+
+async def get_or_create_runtime_state(session: AsyncSession, user_id: int) -> UserRuntimeState:
+    res = await session.execute(select(UserRuntimeState).where(UserRuntimeState.user_id == user_id))
+    state = res.scalar_one_or_none()
+    if state:
+        return state
+    state = UserRuntimeState(user_id=user_id)
+    session.add(state)
+    await session.flush()
+    return state
+
+
+async def touch_user_activity(session: AsyncSession, user_id: int, now: datetime) -> None:
+    state = await get_or_create_runtime_state(session, user_id)
+    state.last_user_activity_at = now
+    await session.flush()
 
 
 async def create_pending_preview(session: AsyncSession, user_id: int, source_type: str, original_text: str, transcript: str, preview: dict) -> PendingPreview:
@@ -70,6 +87,11 @@ async def get_active_tasks(session: AsyncSession, user_id: int) -> list[Task]:
 
 async def get_tasks_for_date(session: AsyncSession, user_id: int, day_start: datetime, day_end: datetime) -> list[Task]:
     res = await session.execute(select(Task).where(and_(Task.user_id == user_id, Task.status == "active", Task.deadline >= day_start, Task.deadline < day_end)))
+    return list(res.scalars().all())
+
+
+async def get_overdue_tasks(session: AsyncSession, user_id: int, now: datetime) -> list[Task]:
+    res = await session.execute(select(Task).where(and_(Task.user_id == user_id, Task.status == "active", Task.deadline.is_not(None), Task.deadline < now)).order_by(Task.deadline.asc()))
     return list(res.scalars().all())
 
 
