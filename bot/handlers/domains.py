@@ -25,7 +25,7 @@ router = Router()
 
 
 @router.callback_query(F.data.startswith("confirm_preview:"))
-async def confirm_preview(callback: CallbackQuery, session_factory, reminder_scheduler, time_service):
+async def confirm_preview(callback: CallbackQuery, session_factory, reminder_scheduler, time_service, problem_block_service, problem_resources_service):
     await callback.answer()
     preview_id = int(callback.data.split(":", 1)[1])
     async with session_factory() as session:
@@ -38,8 +38,6 @@ async def confirm_preview(callback: CallbackQuery, session_factory, reminder_sch
         created_tasks_by_title = {}
         created_reminders = []
         created_problem_blocks = []
-        problem_block_service = callback.bot.dispatcher["problem_block_service"]
-        problem_resources_service = callback.bot.dispatcher["problem_resources_service"]
 
         for intent in payload.get("intents", []):
             t = intent.get("type")
@@ -186,7 +184,6 @@ async def problem_snooze(callback: CallbackQuery):
 async def problem_snooze_tomorrow(callback: CallbackQuery, session_factory, problem_block_service, time_service):
     await callback.answer()
     block_id = int(callback.data.split(":", 1)[1])
-    now = time_service.now()
     until = time_service.build_datetime("tomorrow", "morning").replace(hour=9, minute=0, second=0, microsecond=0)
     async with session_factory() as session:
         item = await problem_block_service.snooze_problem_block(callback.from_user.id, block_id, until, session, "Snoozed until tomorrow")
@@ -285,10 +282,10 @@ async def checkin_all_ok(callback: CallbackQuery, session_factory, time_service)
 
 
 @router.callback_query(F.data.in_({"checkin_build_day", "checkin_next_step"}))
-async def checkin_next_step(callback: CallbackQuery, session_factory, time_service):
+async def checkin_next_step(callback: CallbackQuery, session_factory, time_service, next_step_service):
     await callback.answer()
     async with session_factory() as session:
-        payload = await callback.bot.dispatcher["next_step_service"].build_next_step(callback.from_user.id, session, time_service.now())
+        payload = await next_step_service.build_next_step(callback.from_user.id, session, time_service.now())
     body = "\n".join(f"{i+1}. {a}" for i, a in enumerate(payload.get("actions", [])[:3])) or "1. Один короткий шаг."
     await callback.message.answer(f"Следующий шаг:\n\n{body}")
 
@@ -427,13 +424,13 @@ async def cleanup(message: Message, session_factory, cleanup_service, time_servi
 
 
 @router.message(Command("sync_miro"))
-async def sync_miro(message: Message, session_factory, miro_service, time_service):
+async def sync_miro(message: Message, session_factory, miro_service, time_service, config):
     if not miro_service.is_configured():
         await message.answer("Miro не настроен.\n\nНужно заполнить:\nMIRO_ACCESS_TOKEN\nMIRO_BOARD_ID")
         return
     try:
         async with session_factory() as session:
-            stats = await miro_service.sync_all(message.from_user.id, session, time_service, message.bot.dispatcher["config"])
+            stats = await miro_service.sync_all(message.from_user.id, session, time_service, config)
             await session.commit()
         await message.answer(
             "Miro обновлён.\n\n"
@@ -453,6 +450,12 @@ async def main_menu_callback(callback: CallbackQuery, navigation_service):
     await callback.message.answer("813Assistant\n\nШтаб открыт.\nВыбери блок или напиши задачу обычным текстом.", reply_markup=main_menu())
 
 
+@router.callback_query(F.data == "go_hq")
+async def go_hq_callback(callback: CallbackQuery, session_factory, time_service, navigation_service):
+    await callback.answer()
+    navigation_service.push(callback.from_user.id, "hq")
+    from bot.handlers.menu import render_hq
+    await render_hq(callback.message, session_factory, time_service)
 
 
 @router.callback_query(F.data == "back")
@@ -465,13 +468,15 @@ async def back_callback(callback: CallbackQuery, navigation_service, session_fac
         return
     from bot.keyboards.main_menu import main_menu
     await callback.message.answer("813Assistant\n\nШтаб открыт.\nВыбери блок или напиши задачу обычным текстом.", reply_markup=main_menu())
+
+
 @router.callback_query(F.data == "next_step")
-async def next_step_callback(callback: CallbackQuery, session_factory, navigation_service):
+async def next_step_callback(callback: CallbackQuery, session_factory, time_service, navigation_service, next_step_service):
     await callback.answer()
     navigation_service.push(callback.from_user.id, "next")
     async with session_factory() as session:
-        tasks = await get_active_tasks(session, callback.from_user.id)
-    picks = [f"{i+1}. {t.title}" for i, t in enumerate(tasks[:3])]
+        payload = await next_step_service.build_next_step(callback.from_user.id, session, time_service.now())
+    picks = [f"{i+1}. {p}" for i, p in enumerate(payload.get("actions", [])[:3])]
     body = "\n".join(picks) if picks else "1. Закрыть один мелкий хвост.\n2. Подготовить следующий фокус."
     await callback.message.answer(f"Следующий шаг:\n\n{body}\n\nОграничение: без лишних задач.")
 
@@ -480,6 +485,26 @@ async def next_step_callback(callback: CallbackQuery, session_factory, navigatio
 async def add_note_callback(callback: CallbackQuery):
     await callback.answer()
     await callback.message.answer("Принял. Напиши запись обычным текстом.")
+
+
+@router.callback_query(F.data.startswith("task_done:"))
+async def task_done_callback(callback: CallbackQuery, session_factory, time_service):
+    await callback.answer()
+    task_id = int(callback.data.split(":", 1)[1])
+    async with session_factory() as session:
+        from sqlalchemy import select
+        from bot.database.models import Task
+        res = await session.execute(
+            select(Task).where(Task.id == task_id, Task.user_id == callback.from_user.id)
+        )
+        task = res.scalar_one_or_none()
+        if not task:
+            await callback.message.answer("Задача не найдена.")
+            return
+        task.status = "done"
+        task.completed_at = time_service.now()
+        await session.commit()
+    await callback.message.answer("Принял. Задача закрыта.")
 
 
 @router.callback_query(F.data == "overload_rest")

@@ -26,7 +26,7 @@ class IntentParser:
         for intent in intents:
             item = dict(intent)
             t = item.get("type")
-            if t not in {"create_task", "create_reminder", "rest_day", "show_today", "show_tasks", "do_nothing", "create_problem_block", "update_problem_block", "complete_problem_block", "archive_problem_block", "show_problem_blocks", "get_problem_solution", "get_problem_resources"}:
+            if t not in {"create_task", "create_reminder", "rest_day", "schedule_override", "show_today", "show_tasks", "do_nothing", "create_problem_block", "update_problem_block", "complete_problem_block", "archive_problem_block", "show_problem_blocks", "get_problem_solution", "get_problem_resources"}:
                 return {"transcript": text, "intents": self.ai_service.parse_intent_fallback(text).get("intents", [])}
 
             if t == "create_reminder":

@@ -166,7 +166,7 @@ class MiroService:
     async def sync_archive(self, user_id: int, session, time_service, frames):
         archived_tasks = await get_archived_tasks(session, user_id)
         reminders = await get_active_reminders(session, user_id)
-        blocks = await get_active_problem_blocks(session, user_id, time_service.now() + (time_service.now() - time_service.now()))
+        blocks = await get_active_problem_blocks(session, user_id, time_service.now())
         n = 0
         for i, t in enumerate(archived_tasks[:20]):
             c = f"[АРХИВ]\nТип: task\nНазвание: {t.title}\nПричина: {t.cleanup_reason or '-'}\nДата: {t.archived_at or '-'}"

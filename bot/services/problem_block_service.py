@@ -57,7 +57,7 @@ class ProblemBlockService:
         due.sort(
             key=lambda b: (
                 pr.get(b.priority, 9),
-                b.deadline or datetime.max.replace(tzinfo=now.tzinfo),
+                b.deadline or datetime(9999, 12, 31, tzinfo=now.tzinfo),
                 b.created_at,
             )
         )

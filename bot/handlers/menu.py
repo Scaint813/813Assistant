@@ -4,7 +4,7 @@ from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.types import Message
 
-from bot.database.queries import get_active_tasks, get_reminders_for_date, get_tasks_for_date, get_upcoming_overrides
+from bot.database.queries import get_active_tasks, get_archived_tasks, get_reminders_for_date, get_tasks_for_date, get_upcoming_overrides
 from bot.keyboards.inline import nav_keyboard
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from bot.keyboards.main_menu import main_menu
@@ -49,10 +49,10 @@ async def today(message: Message, session_factory, time_service, navigation_serv
 
 @router.message(Command("next"))
 @router.message(F.text == "Следующий шаг")
-async def next_step(message: Message, session_factory, time_service, navigation_service):
+async def next_step(message: Message, session_factory, time_service, navigation_service, next_step_service):
     navigation_service.push(message.from_user.id, "next")
     async with session_factory() as session:
-        payload = await message.bot.dispatcher["next_step_service"].build_next_step(message.from_user.id, session, time_service.now())
+        payload = await next_step_service.build_next_step(message.from_user.id, session, time_service.now())
     picks = [f"{i+1}. {p}" for i, p in enumerate(payload.get("actions", [])[:3])]
     body = "\n".join(picks) if picks else "1. Закрыть один мелкий хвост.\n2. Подготовить следующий фокус."
     await message.answer(f"Следующий шаг:\n\n{body}\n\nОграничение: без лишних задач.", reply_markup=nav_keyboard())
@@ -60,11 +60,10 @@ async def next_step(message: Message, session_factory, time_service, navigation_
 
 @router.message(Command("problems"))
 @router.message(Command("blocks"))
-async def problems(message: Message, session_factory, time_service):
+async def problems(message: Message, session_factory, time_service, problem_block_service):
     async with session_factory() as session:
-        service = message.bot.dispatcher["problem_block_service"]
-        await service.archive_expired_problem_blocks(message.from_user.id, session, time_service.now())
-        blocks = await service.get_active_problem_blocks(message.from_user.id, session, time_service.now())
+        await problem_block_service.archive_expired_problem_blocks(message.from_user.id, session, time_service.now())
+        blocks = await problem_block_service.get_active_problem_blocks(message.from_user.id, session, time_service.now())
         await session.commit()
     if not blocks:
         await message.answer("АКТИВНЫЕ БЛОКИ\n\n- нет активных.")
@@ -82,10 +81,9 @@ async def problems(message: Message, session_factory, time_service):
     await message.answer("\n".join(lines), reply_markup=kb)
 
 
-async def _send_problem_checkin(message: Message, session_factory, time_service, checkin_type: str):
+async def _send_problem_checkin(message: Message, session_factory, time_service, problem_block_service, checkin_type: str):
     async with session_factory() as session:
-        service = message.bot.dispatcher["problem_block_service"]
-        block = await service.pick_checkin_problem_block(message.from_user.id, session, checkin_type, time_service.now())
+        block = await problem_block_service.pick_checkin_problem_block(message.from_user.id, session, checkin_type, time_service.now())
     if not block:
         await message.answer("Штаб на связи.\nКритичных блоков сейчас нет.")
         return
@@ -117,18 +115,18 @@ async def _send_problem_checkin(message: Message, session_factory, time_service,
 
 
 @router.message(Command("checkin_morning"))
-async def checkin_morning(message: Message, session_factory, time_service):
-    await _send_problem_checkin(message, session_factory, time_service, "morning")
+async def checkin_morning(message: Message, session_factory, time_service, problem_block_service):
+    await _send_problem_checkin(message, session_factory, time_service, problem_block_service, "morning")
 
 
 @router.message(Command("checkin_day"))
-async def checkin_day(message: Message, session_factory, time_service):
-    await _send_problem_checkin(message, session_factory, time_service, "day")
+async def checkin_day(message: Message, session_factory, time_service, problem_block_service):
+    await _send_problem_checkin(message, session_factory, time_service, problem_block_service, "day")
 
 
 @router.message(Command("checkin_evening"))
-async def checkin_evening(message: Message, session_factory, time_service):
-    await _send_problem_checkin(message, session_factory, time_service, "evening")
+async def checkin_evening(message: Message, session_factory, time_service, problem_block_service):
+    await _send_problem_checkin(message, session_factory, time_service, problem_block_service, "evening")
 
 
 @router.message(Command("tasks"))
@@ -136,6 +134,20 @@ async def tasks(message: Message, session_factory):
     async with session_factory() as session:
         items = await get_active_tasks(session, message.from_user.id)
     await message.answer("Активные задачи:\n" + ("\n".join([f"- {t.title} [{t.priority}]" for t in items[:20]]) if items else "- нет"))
+
+
+@router.message(Command("archive"))
+async def archive_cmd(message: Message, session_factory):
+    async with session_factory() as session:
+        items = await get_archived_tasks(session, message.from_user.id)
+    if not items:
+        await message.answer("Архив пуст.")
+        return
+    lines = ["Архив:\n"]
+    for i, t in enumerate(items[:20], start=1):
+        reason = f" ({t.cleanup_reason})" if t.cleanup_reason else ""
+        lines.append(f"{i}. {t.title}{reason}")
+    await message.answer("\n".join(lines))
 
 
 @router.message(Command("schedule"))
@@ -148,7 +160,7 @@ async def schedule(message: Message, session_factory, time_service):
 
 @router.message(Command("help"))
 async def help_cmd(message: Message):
-    await message.answer("Пиши обычным текстом. Команды запасные: /today /tasks /reminders /schedule /next")
+    await message.answer("Пиши обычным текстом. Команды запасные: /today /tasks /reminders /schedule /next /problems /archive /cleanup /sync_miro")
 
 
 @router.message(F.text.in_({"Деньги", "Заказы", "Учёба", "Тело", "Протоколы", "Архив", "Настройки"}))

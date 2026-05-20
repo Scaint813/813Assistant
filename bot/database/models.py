@@ -1,10 +1,14 @@
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 
 from sqlalchemy import Boolean, Date, DateTime, Integer, String, Text
 from sqlalchemy.ext.asyncio import AsyncAttrs
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 class Base(AsyncAttrs, DeclarativeBase):
@@ -12,8 +16,8 @@ class Base(AsyncAttrs, DeclarativeBase):
 
 
 class TimestampMixin:
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
 
 
 class UserProfile(Base, TimestampMixin):
@@ -43,11 +47,14 @@ class Task(Base, TimestampMixin):
     user_id: Mapped[int] = mapped_column(Integer, index=True)
     title: Mapped[str] = mapped_column(String(255))
     description: Mapped[str] = mapped_column(Text, default="")
+    category: Mapped[str] = mapped_column(String(64), default="")
+    project: Mapped[str] = mapped_column(String(128), default="")
     status: Mapped[str] = mapped_column(String(32), default="active")
     priority: Mapped[str] = mapped_column(String(16), default="medium")
     deadline: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     is_minor: Mapped[bool] = mapped_column(Boolean, default=False)
     auto_cleanup_allowed: Mapped[bool] = mapped_column(Boolean, default=False)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     cleanup_reason: Mapped[str] = mapped_column(Text, default="")
     miro_item_id: Mapped[str] = mapped_column(String(128), default="")
@@ -99,7 +106,7 @@ class CleanupLog(Base):
     entity_id: Mapped[int] = mapped_column(Integer)
     action: Mapped[str] = mapped_column(String(64))
     reason: Mapped[str] = mapped_column(Text)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
 
 class ProblemBlock(Base, TimestampMixin):
@@ -130,7 +137,7 @@ class ProblemBlockEvent(Base):
     problem_block_id: Mapped[int] = mapped_column(Integer, index=True)
     event_type: Mapped[str] = mapped_column(String(64), default="")
     comment: Mapped[str] = mapped_column(Text, default="")
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
 
 class MiroMapping(Base, TimestampMixin):
