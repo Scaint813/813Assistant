@@ -1,136 +1,328 @@
 # 813Assistant
 
-Личный Telegram AI-ассистент (MVP) на aiogram 3.x.
+Личный Telegram AI-штаб на aiogram 3.x + SQLite + APScheduler.
 
-## Что умеет MVP
-- Ограничение доступа по `ALLOWED_USER_ID`.
-- Текст/voice -> AI intent parser -> Action Preview -> Confirm -> запись в SQLite.
-- Intents: `create_task`, `create_reminder`, `schedule_override`, `rest_day`, `do_nothing`.
-- Команды чтения: `/today`, `/tasks`, `/reminders`, `/schedule`, `/help`.
-- Автоархив: `/cleanup` (учитывает активные связанные напоминания).
-- Синхронизация Miro: `/sync_miro`.
-- Планировщик напоминаний APScheduler с отправкой в Telegram.
+Пользователь пишет обычным текстом → бот понимает → структурирует → предлагает действие → после подтверждения сохраняет, напоминает, синхронизирует.
 
-## Напоминания
-- Создаются естественным текстом: `завтра вечером напомни проверить оплату Артёма`.
-- Могут создаваться из voice после расшифровки.
-- После подтверждения preview напоминание сохраняется в БД и, если время в будущем, ставится в APScheduler.
-- При старте бота все активные будущие напоминания заново планируются.
-- В момент срабатывания бот отправляет сообщение в личку:
-  - `[Готово]` -> закрыть напоминание
-  - `[Перенести]` -> меню переноса
-  - `[Отмена]` -> отменить напоминание
-- Список: `/reminders` (показывает время, статус и пометку просрочки).
+---
+
+## Что умеет
+
+- **Доступ** ограничен по `ALLOWED_USER_ID` — middleware на все messages и callbacks.
+- **Свободный ввод** → AI/fallback parser → intent → Action Preview → Confirm → DB.
+- **Голосовые сообщения** → OpenAI Whisper → тот же parser → preview.
+- **Intents**: `create_task`, `create_reminder`, `rest_day`, `schedule_override`, `create_problem_block`, `show_today`, `show_tasks`, `do_nothing`.
+- **Напоминания** через APScheduler — Telegram push в нужное время с кнопками (Готово / Перенести / Отмена).
+- **Check-ins** утром/днём/вечером — автоматически, с антиспамом и quiet mode.
+- **Problem blocks** — активные блоки проблем, решение за 3 шага, snooze, архив, ресурсы.
+- **Next step** — `/next` анализирует задачи / напоминания / блоки и даёт 1–3 действия.
+- **Overload screen** — если пишешь "мне плохо" / "не вывожу" — стабилизация вместо задач.
+- **Miro sync** — `/sync_miro` создаёт/обновляет штаб в Miro без дублей. Если не настроен — не падает.
+- **Cleanup** — `/cleanup` архивирует только мелкие просроченные задачи, не трогает важные.
+- **Health check** — `/health` показывает статус DB / OpenAI / Miro / scheduler прямо в Telegram.
+
+---
+
+## Команды
+
+| Команда | Описание |
+|---------|----------|
+| `/start` | Открыть штаб |
+| `/today` | Сводка дня |
+| `/tasks` | Активные задачи |
+| `/reminders` | Активные напоминания |
+| `/problems` `/blocks` | Активные блоки проблем |
+| `/next` | Следующий шаг |
+| `/schedule` | Ближайшие override-режимы |
+| `/archive` | Архивные задачи |
+| `/cleanup` | Убрать мелкие просроченные задачи |
+| `/sync_miro` | Синхронизировать Miro-штаб |
+| `/health` | Статус бота (DB, scheduler, конфиги) |
+| `/help` | Краткая помощь |
+| `/debug_create_test_data` | DEBUG: создать тестовые task/reminder/block |
+
+---
 
 ## Настройка `.env`
-1. Скопируйте `.env.example` в `.env`.
-2. Заполните переменные.
-3. `.env` не коммитить.
 
-
-## Голосовые сообщения
-- Бот принимает Telegram voice-сообщения.
-- Скачивает audio во временный файл.
-- Отправляет файл в OpenAI transcription (`OPENAI_TRANSCRIPTION_MODEL`, по умолчанию `whisper-1`).
-- Передаёт расшифровку в тот же intent parser, что и текст.
-- Перед любой записью в БД показывает Action Preview.
-- Запись выполняется только после подтверждения.
-
-## Подключение OpenAI
-1. Создайте API key в OpenAI Platform.
-2. Укажите `OPENAI_API_KEY` в `.env`.
-3. Настройте модели:
-   - `OPENAI_MODEL_FAST` для простых intent-задач
-   - `OPENAI_MODEL_SMART` для сложного анализа/планирования
-   - `OPENAI_MODEL` как обратная совместимость/fallback
-   - `OPENAI_TRANSCRIPTION_MODEL` для voice транскрибации
-
-## Подключение Miro
-1. Создайте Miro app и получите token.
-2. Укажите `MIRO_ACCESS_TOKEN`.
-3. Укажите `MIRO_BOARD_ID`.
-4. Укажите `MIRO_AI_ZONE_START_X/Y` (AI-зона правее ручной зоны).
-
-## Запуск
 ```bash
+cp .env.example .env
+nano .env
+```
+
+| Переменная | Описание |
+|-----------|----------|
+| `BOT_TOKEN` | Токен бота от @BotFather |
+| `BOT_ID` | ID бота (число) |
+| `ALLOWED_USER_ID` | Telegram user_id единственного пользователя |
+| `TIMEZONE` | Таймзона, например `Europe/Moscow` |
+| `OPENAI_API_KEY` | Ключ OpenAI (опционально — без него работает fallback parser) |
+| `OPENAI_MODEL_FAST` | Модель для простых intents |
+| `OPENAI_MODEL_SMART` | Модель для сложного анализа |
+| `OPENAI_TRANSCRIPTION_MODEL` | Модель Whisper (по умолчанию `whisper-1`) |
+| `MIRO_ACCESS_TOKEN` | Miro OAuth token (опционально) |
+| `MIRO_BOARD_ID` | ID доски Miro (опционально) |
+| `MIRO_AI_ZONE_START_X` | X-координата начала AI-зоны (по умолчанию 5000) |
+| `MIRO_AI_ZONE_START_Y` | Y-координата (по умолчанию 0) |
+| `CHECKIN_ENABLED` | `true` / `false` |
+| `CHECKIN_MORNING_TIME` | Время утреннего check-in, например `09:30` |
+| `CHECKIN_DAY_TIME` | Время дневного check-in |
+| `CHECKIN_EVENING_TIME` | Время вечернего check-in |
+| `DATABASE_URL` | SQLite URL (по умолчанию `sqlite+aiosqlite:///./assistant.db`) |
+
+> `.env` добавлен в `.gitignore` — не коммитить.
+
+---
+
+## Первый запуск на сервере
+
+```bash
+# 1. Получить код
+git clone <repo_url> /opt/bot/813Assistant
+cd /opt/bot/813Assistant
+
+# 2. Виртуальное окружение
+python3 -m venv .venv
+source .venv/bin/activate
+
+# 3. Зависимости
+pip install -r requirements.txt
+
+# 4. Настройка
+cp .env.example .env
+nano .env          # заполнить BOT_TOKEN, ALLOWED_USER_ID и т.д.
+
+# 5. Проверка кода
+bash scripts_check_no_conflicts.sh
+python -m compileall .
+
+# 6. Первый запуск
 python -m bot.main
 ```
 
-## Команды
-`/start /today /tasks /reminders /schedule /help /cleanup /sync_miro`
+При первом запуске `assistant.db` создаётся автоматически со всеми таблицами.
+
+### Если assistant.db уже существует
+
+Миграция применяется **автоматически** при каждом старте:
+новые колонки добавляются через `ALTER TABLE` (idempotent — не ломается при повторе).
+
+Если хочешь начать с чистой БД:
+
+```bash
+rm assistant.db
+python -m bot.main
+```
+
+### Проверка после запуска
+
+Написать боту `/health` — должен прийти ответ:
+
+```
+813Assistant health
+
+DB: OK
+OpenAI: set / missing (fallback parser active)
+Miro: set / missing (sync disabled)
+Scheduler: running
+...
+```
+
+---
+
+## Systemd (production)
+
+```bash
+sudo cp deploy/813assistant.service.example /etc/systemd/system/813assistant.service
+# Отредактировать WorkingDirectory и ExecStart если нужно
+sudo systemctl daemon-reload
+sudo systemctl enable 813assistant
+sudo systemctl start 813assistant
+sudo systemctl status 813assistant
+```
+
+Логи:
+
+```bash
+journalctl -u 813assistant -f
+journalctl -u 813assistant --since "1 hour ago"
+```
+
+---
+
+## Backup SQLite
+
+```bash
+# Настроить cron (бэкап каждый день в 03:00)
+chmod +x deploy/backup_sqlite.sh.example
+cp deploy/backup_sqlite.sh.example /opt/bot/backup_813assistant.sh
+
+crontab -e
+# Добавить строку:
+0 3 * * * /opt/bot/backup_813assistant.sh >> /var/log/813assistant_backup.log 2>&1
+```
+
+Бэкапы хранятся в `/opt/bot/backups/813Assistant/`, ротация 14 дней.
+
+---
+
+## Голосовые сообщения
+
+Pipeline:
+
+```
+voice → скачать файл → Whisper (OPENAI_API_KEY) → текст → intent parser → Action Preview → Confirm → DB
+```
+
+Если `OPENAI_API_KEY` не задан:
+
+```
+Транскрибация не настроена: отсутствует OPENAI_API_KEY.
+```
+
+Голос использует тот же parser, что и текст — отдельной бизнес-логики нет.
+
+---
+
+## OpenAI / Fallback parser
+
+- Если `OPENAI_API_KEY` пустой → rule-based fallback parser, бот не падает.
+- Простые intents → `OPENAI_MODEL_FAST`.
+- Сложный анализ (планирование, next_step, перегруз) → `OPENAI_MODEL_SMART`.
+- Если SMART не задан — fallback в FAST. Если оба не заданы — fallback parser.
+
+---
+
+## Action Preview
+
+Бот **не сохраняет данные без подтверждения**.
+
+Требуют подтверждения:
+- `create_task`
+- `create_reminder`
+- `rest_day` / `schedule_override`
+- `create_problem_block`
+
+Не требуют:
+- `/today`, `/tasks`, `/reminders`, `/next`, `/help`, `/health`
+
+---
+
+## Напоминания
+
+- Создаются через preview: "завтра вечером напомни проверить оплату Артёма"
+- Сохраняются в `reminders` с `status=active`
+- APScheduler планирует job `reminder:{id}` при confirm
+- При старте бота все активные будущие напоминания перепланируются
+- В момент срабатывания Telegram push с кнопками: **Готово / Перенести / Отмена**
+- Snooze: +1ч / вечером / завтра утром
+
+---
+
+## Check-ins
+
+Автоматически 3 раза в день через APScheduler (тот же instance, что reminders).
+
+Антиспам:
+- `checkin_enabled=false` → не отправляется
+- `quiet_until > now` → не отправляется
+- Активность пользователя < 45 минут назад → не отправляется
+- Уже был check-in < 2 часов → не отправляется
+- Максимум 3 check-in в день
+
+Quiet mode: кнопка [Тихий режим] → [На 2 часа / До завтра / Выключить check-ins].
+
+Ручной тест:
+1. Поставить `CHECKIN_DAY_TIME` на текущее время + 2 минуты
+2. Запустить бота
+3. Дождаться check-in
+
+---
+
+## Problem blocks
+
+```
+"путаюсь в расчётах заказов" → preview → confirm → /problems
+```
+
+Категории: `study`, `exam`, `money`, `orders`, `health`, `training`, `sleep`, `conflict`, `work`, `discipline`, `overload`, `system`, `other`.
+
+Действия: Следующий шаг / Отложить (до завтра / 3д / неделю) / Ресурсы / Развернуть / Закрыть / Архив.
+
+Check-ins показывают максимум один active problem block.
+
+После дедлайна блок → `expired`, не попадает в `/next` и check-ins.
+
+---
+
+## /next — следующий шаг
+
+Анализирует: active tasks, overdue tasks, reminders в ближайшие 2ч, rest_day, problem blocks, overload.
+
+Выдаёт 1–3 действия. Не создаёт данные в БД — только рекомендует.
+
+Если rest_day — не предлагает тяжёлый план. Если overload — сначала стабилизация.
+
+---
+
+## /sync_miro
+
+```
+/sync_miro → создаёт/обновляет секции штаба в Miro
+```
+
+Секции: ШТАБ / TODAY, ЗАДАЧИ / TASKS, НАПОМИНАНИЯ, ПРОБЛЕМЫ, РАСПИСАНИЕ, CHECK-INS, АРХИВ.
+
+Дубли предотвращаются через `miro_mappings` (entity_type + entity_id + board_id).
+
+Если `MIRO_ACCESS_TOKEN` или `MIRO_BOARD_ID` пустые:
+
+```
+Miro не настроен.
+Нужно заполнить: MIRO_ACCESS_TOKEN, MIRO_BOARD_ID
+```
+
+---
+
+## /cleanup
+
+Архивирует только задачи с:
+- `is_minor=True`
+- `auto_cleanup_allowed=True`
+- просрочены > 3 дней
+- нет активного linked reminder
+- нет защищённых ключевых слов (оплата, заказ, клиент, ЕГЭ, долг...)
+
+High/urgent задачи не архивируются никогда.
+
+---
+
+## Smoke-test checklist
+
+После деплоя вручную проверить:
+
+```
+[ ] /start → штабное меню с кнопками
+[ ] /health → DB: OK, Scheduler: running
+[ ] "разобраться с Miro" → create_task preview → Подтвердить → /tasks покажет задачу
+[ ] "мне плохо, я не вывожу" → Overload screen (не обычная задача)
+[ ] "путаюсь в расчётах заказов" → problem_block preview → confirm → /problems
+[ ] /next → 1–3 действия
+[ ] /sync_miro без MIRO config → "Miro не настроен", без ошибки
+[ ] /cleanup → "Убрано в архив: 0 задач" (нет кандидатов)
+[ ] /archive → архивные задачи (или "Архив пуст")
+[ ] /debug_create_test_data → тестовые данные + напоминание через ~1 мин
+[ ] Через 1 мин → Telegram push напоминания, кнопки работают
+[ ] Тихий режим → [Тихий режим] → [На 2 часа] → check-ins не приходят
+[ ] Другой Telegram user → "Доступ закрыт."
+```
+
+---
 
 ## Development checks
+
 ```bash
 bash scripts_check_no_conflicts.sh
 python -m compileall .
+python -c "import ast, os; [ast.parse(open(os.path.join(r,f)).read()) for r,_,fs in os.walk('bot') for f in fs if f.endswith('.py')]; print('AST OK')"
 ```
-
-
-## UIX: Штаб
-- `/start` открывает короткое меню штаба с блоками и свободным вводом.
-- Кнопка `Штаб` показывает краткую сводку: режим дня, фокус, задачи, напоминания, риски.
-- Кнопка `/next` или `Следующий шаг` даёт 1–3 действия без перегруза.
-- При признаках перегруза бот показывает экран стабилизации с кнопками: `Экстренный отдых`, `Собрать лёгкий план`, `Скипнуть и продолжить`.
-- Для inline-навигации есть `Назад` и `Главное меню`.
-
-
-## Miro структура штаба
-- Бот использует AI-зону только правее `MIRO_AI_ZONE_START_X`.
-- `/sync_miro` создаёт/обновляет заголовки фреймов и данные по блокам:
-  - `ШТАБ/TODAY`, `ЗАДАЧИ/TASKS`, `НАПОМИНАНИЯ/REMINDERS`, `РАСПИСАНИЕ/SCHEDULE`, `АРХИВ/ARCHIVE`.
-- Остальные фреймы (`MONEY/ORDERS/STUDY/BODY/PROTOCOLS`) создаются как заготовки.
-- Дубли предотвращаются через повторное использование `miro_item_id` у задач/напоминаний.
-- Если Miro не настроен, `/sync_miro` возвращает короткую ошибку, остальной бот продолжает работать.
-
-## Выбор OpenAI-модели
-- Простые intent-задачи идут через `OPENAI_MODEL_FAST`.
-- Сложные анализ/планирование/перегруз/next-step маршрутизируются в `OPENAI_MODEL_SMART`.
-- Если SMART не задана — fallback в FAST.
-- Если FAST не задана — fallback в `OPENAI_MODEL`.
-- Если модели не заданы или OpenAI недоступен — rule-based parser fallback.
-
-## Активные блоки проблем
-- Блок создаётся из обычного текста/голоса через Action Preview и только после подтверждения.
-- Категории: `study`, `exam`, `money`, `orders`, `health`, `training`, `sleep`, `conflict`, `work`, `discipline`, `overload`, `system`, `other`.
-- Команды: `/problems` и `/blocks` показывают активные блоки и следующий шаг.
-- Блоки подмешиваются в `/next`, если подошло время `next_review_at`.
-- Для каждого блока доступно короткое решение (до 3 пунктов), ресурсы (2-4), архивирование и закрытие.
-- После дедлайна блок уходит в `expired` и не попадает в активный поток.
-- ЕГЭ — частный случай категории `exam`; после дедлайна экзамена блоки архивируются, система продолжает работать для других проблем.
-
-Примеры:
-- `ошибка по обществу 24: план слишком общий`
-- `я постоянно срываю сон`
-- `путаюсь в расчётах заказов`
-- `клиенты зависают на оплате`
-- `problem_expand:{id}` показывает расширенный, но короткий разбор: проблема, почему мешает, 3 шага, следующий шаг, ресурсы.
-- `problem_snooze:{id}` открывает меню переноса: до завтра / на 3 дня / на неделю.
-- Snooze меняет `next_review_at`, оставляет блок `active` и пишет событие `snoozed`.
-- Check-ins учитывают problem blocks и показывают максимум один активный блок за check-in.
-- Если `next_review_at` в будущем или дедлайн прошёл, блок не подмешивается в check-in.
-
-## Плановые check-ins
-- Бот автоматически отправляет проверки утром/днём/вечером через общий APScheduler (тот же instance, что и reminders).
-- Проверяется quiet mode, checkin_enabled, недавняя активность пользователя и частота отправки, чтобы не спамить.
-- В check-in подмешивается максимум один active problem block (если due), иначе отправляется базовая проверка.
-- Quiet mode управляется кнопками: `quiet_2h`, `quiet_until_tomorrow`, `checkins_disable`, `quiet_cancel`.
-
-Переменные:
-- `CHECKIN_ENABLED=true|false`
-- `CHECKIN_MORNING_TIME=09:30`
-- `CHECKIN_DAY_TIME=14:30`
-- `CHECKIN_EVENING_TIME=21:30`
-
-Ручной тест:
-1. Поставьте `CHECKIN_DAY_TIME` на ближайшие 2 минуты.
-2. Запустите бота.
-3. Дождитесь автоматического check-in сообщения.
-
-## Miro-визуализация
-- Miro используется как визуальный штаб; источником правды остаётся БД.
-- `/sync_miro` обновляет: `ШТАБ`, `ЗАДАЧИ`, `НАПОМИНАНИЯ`, `ПРОБЛЕМЫ`, `РАСПИСАНИЕ`, `CHECK-INS`, `АРХИВ`.
-- Все AI-элементы создаются только в зоне правее `MIRO_AI_ZONE_START_X`.
-- Дубли предотвращаются через `miro_mappings` (связь сущности БД и sticky-note в Miro).
-- Если `MIRO_ACCESS_TOKEN` или `MIRO_BOARD_ID` не заполнены, бот отвечает "Miro не настроен" и продолжает работу.
-- На фреймах действуют лимиты: задачи до 15, напоминания до 10, problem blocks до 10, архив до 20.
-- Плановые check-ins ограничены до 3 отправок в день (runtime counter в `UserRuntimeState`).

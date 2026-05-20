@@ -1,0 +1,16 @@
+[Unit]
+Description=813Assistant Telegram Bot
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/bot/813Assistant
+ExecStart=/opt/bot/813Assistant/.venv/bin/python -m bot.main
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

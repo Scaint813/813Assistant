@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# backup_sqlite.sh — ежедневный бэкап assistant.db
+# Добавить в cron: 0 3 * * * /opt/bot/813Assistant/deploy/backup_sqlite.sh
+
+set -euo pipefail
+
+DB_PATH="/opt/bot/813Assistant/assistant.db"
+BACKUP_DIR="/opt/bot/backups/813Assistant"
+TIMESTAMP=$(date +%F_%H-%M)
+BACKUP_FILE="${BACKUP_DIR}/assistant_${TIMESTAMP}.db"
+KEEP_DAYS=14
+
+mkdir -p "$BACKUP_DIR"
+
+if [ ! -f "$DB_PATH" ]; then
+    echo "$(date): DB not found at $DB_PATH — skipping backup" >&2
+    exit 0
+fi
+
+cp "$DB_PATH" "$BACKUP_FILE"
+echo "$(date): Backup saved → $BACKUP_FILE"
+
+# Удалить бэкапы старше KEEP_DAYS дней
+find "$BACKUP_DIR" -name "assistant_*.db" -mtime "+${KEEP_DAYS}" -delete
+echo "$(date): Old backups (>${KEEP_DAYS}d) cleaned"
