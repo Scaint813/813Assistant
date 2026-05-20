@@ -9,7 +9,7 @@ router = Router()
 
 
 @router.message(CommandStart())
-async def start_cmd(message: Message, session_factory, config, navigation_service):
+async def start_cmd(message: Message, session_factory, config, navigation_service, screen_service):
     async with session_factory() as session:
         await get_or_create_user_profile(
             session,
@@ -19,8 +19,8 @@ async def start_cmd(message: Message, session_factory, config, navigation_servic
         )
         await session.commit()
     navigation_service.reset(message.from_user.id)
-    # ReplyKeyboard only — no inline buttons on the start screen
     await message.answer(
         "813Assistant\n\nШтаб открыт.\nВыбери блок или напиши задачу обычным текстом.",
         reply_markup=main_menu(),
     )
+    await screen_service.delete_user_input(message)

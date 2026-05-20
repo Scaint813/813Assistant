@@ -16,9 +16,10 @@ router = Router()
 
 
 @router.message(F.voice)
-async def capture_voice(message: Message, bot, transcription_service, intent_parser, session_factory, time_service):
+async def capture_voice(message: Message, bot, transcription_service, intent_parser, session_factory, time_service, screen_service):
     if not transcription_service.api_key:
         await message.answer("Транскрибация не настроена: отсутствует OPENAI_API_KEY.")
+        # Do NOT delete — user should know their voice wasn't understood
         return
 
     temp_path: Path | None = None
@@ -54,14 +55,13 @@ async def capture_voice(message: Message, bot, transcription_service, intent_par
     first_intent = (parsed.get("intents") or [{}])[0].get("type")
 
     if first_intent == "do_nothing":
-        await message.answer("Расшифровка:\n" + transcript + "\n\nПонял, ничего не записываю.")
+        await message.answer(f"Расшифровка:\n\"{transcript}\"\n\nПонял, ничего не записываю.")
+        await screen_service.delete_user_input(message)
         return
 
     if first_intent == "show_today":
-        # reuse text-flow immediate behavior via /today-like summary
-        now = time_service.now()
         from datetime import datetime, timedelta
-
+        now = time_service.now()
         day_start = datetime.combine(now.date(), datetime.min.time(), tzinfo=now.tzinfo)
         day_end = day_start + timedelta(days=1)
         async with session_factory() as session:
@@ -75,18 +75,29 @@ async def capture_voice(message: Message, bot, transcription_service, intent_par
         text.append("\nOverrides:")
         text.extend([f"- {o.date} {o.mode}" for o in overrides[:5]] or ["- нет"])
         await message.answer("Расшифровка:\n" + transcript + "\n\n" + "\n".join(text))
+        await screen_service.delete_user_input(message)
         return
-
 
     if first_intent == "show_tasks":
         async with session_factory() as session:
             tasks = await get_active_tasks(session, message.from_user.id)
         body = "\n".join([f"- {t.title} [{t.priority}]" for t in tasks[:20]]) if tasks else "- нет"
-        await message.answer("Расшифровка:\n" + transcript + "\n\nАктивные задачи:\n" + body)
+        await message.answer(f"Расшифровка:\n\"{transcript}\"\n\nАктивные задачи:\n{body}")
+        await screen_service.delete_user_input(message)
         return
 
+    # ── Action Preview ─────────────────────────────────────────────────────────
+    # Voice file is already downloaded and transcript is read — safe to delete
     async with session_factory() as session:
-        preview = await create_pending_preview(session, message.from_user.id, "voice", transcript, transcript, parsed)
+        preview = await create_pending_preview(
+            session, message.from_user.id, "voice", transcript, transcript, parsed
+        )
         await session.commit()
 
-    await message.answer(f"Расшифровка:\n\"{transcript}\"\n\n{render_preview(parsed)}", reply_markup=confirm_keyboard(preview.id))
+    # Show transcript in preview so user sees what was understood
+    preview_text = (
+        f"ПРОВЕРКА\n\nРасшифровка:\n\"{transcript}\"\n\n"
+        + render_preview(parsed)
+    )
+    await message.answer(preview_text, reply_markup=confirm_keyboard(preview.id))
+    await screen_service.delete_user_input(message)

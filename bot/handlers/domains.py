@@ -475,22 +475,24 @@ async def task_done_callback(callback: CallbackQuery, session_factory, time_serv
 # ── Utility commands ───────────────────────────────────────────────────────────
 
 @router.message(Command("cleanup"))
-async def cleanup(message: Message, session_factory, cleanup_service, time_service):
+async def cleanup(message: Message, session_factory, cleanup_service, time_service, screen_service):
     async with session_factory() as session:
         archived = await cleanup_service.run(session, message.from_user.id, time_service.now())
         await session.commit()
     if not archived:
         await message.answer("Убрано в архив: 0 задач")
-        return
-    await message.answer("Убрано в архив: {} задач\n{}".format(
-        len(archived), "\n".join(f"- {t.title}" for t in archived)
-    ))
+    else:
+        await message.answer("Убрано в архив: {} задач\n{}".format(
+            len(archived), "\n".join(f"- {t.title}" for t in archived)
+        ))
+    await screen_service.delete_user_input(message)
 
 
 @router.message(Command("sync_miro"))
-async def sync_miro(message: Message, session_factory, miro_service, time_service, config):
+async def sync_miro(message: Message, session_factory, miro_service, time_service, config, screen_service):
     if not miro_service.is_configured():
         await message.answer("Miro не настроен.\n\nНужно заполнить:\nMIRO_ACCESS_TOKEN\nMIRO_BOARD_ID")
+        await screen_service.delete_user_input(message)
         return
     try:
         async with session_factory() as session:
@@ -504,6 +506,7 @@ async def sync_miro(message: Message, session_factory, miro_service, time_servic
         )
     except Exception:
         await message.answer("Miro не обновлён. Ошибка записана в лог.")
+    await screen_service.delete_user_input(message)
 
 
 # ── Overload callbacks ─────────────────────────────────────────────────────────

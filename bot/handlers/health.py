@@ -19,7 +19,7 @@ router = Router()
 
 
 @router.message(Command("health"))
-async def health_cmd(message: Message, session_factory, time_service, miro_service, reminder_scheduler, config, checkin_service):
+async def health_cmd(message: Message, session_factory, time_service, miro_service, reminder_scheduler, config, checkin_service, screen_service):
     """Quick smoke-test. Safe: never shows tokens."""
     now = time_service.now()
 
@@ -77,10 +77,11 @@ async def health_cmd(message: Message, session_factory, time_service, miro_servi
         f"{quiet_info}"
     )
     await message.answer(text)
+    await screen_service.delete_user_input(message)
 
 
 @router.message(Command("debug_create_test_data"))
-async def debug_create_test_data(message: Message, session_factory, time_service, reminder_scheduler):
+async def debug_create_test_data(message: Message, session_factory, time_service, reminder_scheduler, screen_service):
     """
     DEBUG ONLY. Creates 1 task + 1 reminder (+1 min) + 1 problem block.
     Accessible only to ALLOWED_USER_ID (enforced by AccessMiddleware).
@@ -135,3 +136,4 @@ async def debug_create_test_data(message: Message, session_factory, time_service
         "Проверь: /tasks /reminders /problems\n"
         "Через ~1 мин придёт тестовое напоминание."
     )
+    await screen_service.delete_user_input(message)

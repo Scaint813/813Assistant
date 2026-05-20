@@ -15,10 +15,11 @@ from bot.database.queries import (
     get_upcoming_overrides,
     get_or_create_runtime_state,
 )
-from bot.keyboards.inline import problem_block_keyboard, problem_snooze_keyboard
+from bot.keyboards.inline import problem_block_keyboard
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 router = Router()
+
 
 # ── HQ helper ─────────────────────────────────────────────────────────────────
 
@@ -68,7 +69,7 @@ async def render_hq(message: Message, session_factory, time_service, screen_serv
             user_id=message.from_user.id,
             chat_id=message.chat.id,
             text=text,
-            reply_markup=None,  # No inline — navigation is in bottom ReplyKeyboard
+            reply_markup=None,
         )
         await session.commit()
 
@@ -80,6 +81,7 @@ async def render_hq(message: Message, session_factory, time_service, screen_serv
 async def today(message: Message, session_factory, time_service, navigation_service, screen_service, bot):
     navigation_service.push(message.from_user.id, "hq")
     await render_hq(message, session_factory, time_service, screen_service, bot)
+    await screen_service.delete_user_input(message)
 
 
 @router.message(Command("next"))
@@ -93,7 +95,6 @@ async def next_step(message: Message, session_factory, time_service, navigation_
     body = "\n".join(picks) if picks else "1. Закрыть один мелкий хвост.\n2. Подготовить следующий фокус."
     text = f"Следующий шаг:\n\n{body}\n\nОграничение: без лишних задач."
 
-    # Only show inline if there's a concrete entity to act on
     from bot.keyboards.inline import next_step_entity_keyboard
     entities = payload.get("related_entities", [])
     entity = entities[0] if entities else None
@@ -107,6 +108,7 @@ async def next_step(message: Message, session_factory, time_service, navigation_
             text=text, reply_markup=kb,
         )
         await session.commit()
+    await screen_service.delete_user_input(message)
 
 
 @router.message(Command("problems"))
@@ -126,6 +128,7 @@ async def problems(message: Message, session_factory, time_service, screen_servi
                 text="АКТИВНЫЕ БЛОКИ\n\n— нет активных.",
             )
             await session.commit()
+        await screen_service.delete_user_input(message)
         return
 
     lines = ["АКТИВНЫЕ БЛОКИ\n"]
@@ -133,7 +136,6 @@ async def problems(message: Message, session_factory, time_service, screen_servi
         lines.append(f"{i+1}. {b.title}")
         lines.append(f"   Категория: {b.category}")
         lines.append(f"   Следующий шаг: {b.next_action}")
-    # Show action keyboard only for the top block
     kb = problem_block_keyboard(blocks[0].id)
     async with session_factory() as session:
         await screen_service.render_screen(
@@ -143,6 +145,7 @@ async def problems(message: Message, session_factory, time_service, screen_servi
             text="\n".join(lines), reply_markup=kb,
         )
         await session.commit()
+    await screen_service.delete_user_input(message)
 
 
 async def _send_problem_checkin(
@@ -185,16 +188,19 @@ async def _send_problem_checkin(
 @router.message(Command("checkin_morning"))
 async def checkin_morning(message: Message, session_factory, time_service, screen_service, bot, problem_block_service):
     await _send_problem_checkin(message, session_factory, time_service, screen_service, bot, problem_block_service, "morning")
+    await screen_service.delete_user_input(message)
 
 
 @router.message(Command("checkin_day"))
 async def checkin_day(message: Message, session_factory, time_service, screen_service, bot, problem_block_service):
     await _send_problem_checkin(message, session_factory, time_service, screen_service, bot, problem_block_service, "day")
+    await screen_service.delete_user_input(message)
 
 
 @router.message(Command("checkin_evening"))
 async def checkin_evening(message: Message, session_factory, time_service, screen_service, bot, problem_block_service):
     await _send_problem_checkin(message, session_factory, time_service, screen_service, bot, problem_block_service, "evening")
+    await screen_service.delete_user_input(message)
 
 
 @router.message(Command("tasks"))
@@ -210,6 +216,7 @@ async def tasks_cmd(message: Message, session_factory, screen_service, bot):
             text=f"Активные задачи:\n\n{body}",
         )
         await session.commit()
+    await screen_service.delete_user_input(message)
 
 
 @router.message(Command("archive"))
@@ -233,6 +240,7 @@ async def archive_cmd(message: Message, session_factory, screen_service, bot):
             text=text,
         )
         await session.commit()
+    await screen_service.delete_user_input(message)
 
 
 @router.message(Command("reminders"))
@@ -256,6 +264,7 @@ async def reminders_list(message: Message, session_factory, time_service, screen
             text=text,
         )
         await session.commit()
+    await screen_service.delete_user_input(message)
 
 
 @router.message(Command("schedule"))
@@ -271,15 +280,17 @@ async def schedule(message: Message, session_factory, time_service, screen_servi
             text=f"Ближайшие исключения расписания:\n\n{body}",
         )
         await session.commit()
+    await screen_service.delete_user_input(message)
 
 
 @router.message(Command("help"))
-async def help_cmd(message: Message):
+async def help_cmd(message: Message, screen_service):
     await message.answer(
         "Пиши задачу обычным текстом.\n\n"
         "Команды: /today /tasks /reminders /schedule /next /problems "
         "/archive /cleanup /sync_miro /health"
     )
+    await screen_service.delete_user_input(message)
 
 
 @router.message(F.text.in_({"Деньги", "Заказы", "Учёба", "Тело", "Протоколы", "Настройки"}))
@@ -293,3 +304,4 @@ async def sections_stub(message: Message, screen_service, bot, session_factory):
             text=f"{name}\n\nРаздел в работе.\nПиши задачу свободным текстом.",
         )
         await session.commit()
+    await screen_service.delete_user_input(message)

@@ -20,6 +20,17 @@ class ScreenService:
     - Safe: all Telegram errors during delete/edit are caught and logged.
     """
 
+    async def delete_user_input(self, message) -> None:
+        """
+        Best-effort deletion of the user's incoming message.
+        Call AFTER the bot has fully processed and responded to the message.
+        Never raises — all Telegram errors are caught silently.
+        """
+        try:
+            await message.bot.delete_message(message.chat.id, message.message_id)
+        except Exception as exc:
+            logger.debug("delete_user_input skipped (msg_id=%s): %s", message.message_id, exc)
+
     async def render_screen(
         self,
         bot: Bot,
