@@ -24,6 +24,7 @@ from bot.services.overload_service import OverloadService
 from bot.services.problem_block_service import ProblemBlockService
 from bot.services.problem_resources_service import ProblemResourcesService
 from bot.services.reminder_scheduler import ReminderScheduler
+from bot.services.screen_service import ScreenService
 from bot.services.time_service import TimeService
 from bot.services.transcription_service import TranscriptionService
 
@@ -115,6 +116,7 @@ async def main() -> None:
     dp["problem_resources_service"] = problem_resources_service
     dp["next_step_service"] = next_step_service
     dp["checkin_service"] = checkin_service
+    dp["screen_service"] = ScreenService()
 
     log.info(
         "Services: OpenAI=%s | Miro=%s | Transcription=%s",

@@ -39,6 +39,8 @@ class UserRuntimeState(Base, TimestampMixin):
     checkin_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     checkin_count_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     checkin_count_today: Mapped[int] = mapped_column(Integer, default=0)
+    last_screen_chat_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    last_screen_message_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
 class Task(Base, TimestampMixin):

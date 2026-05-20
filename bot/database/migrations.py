@@ -13,6 +13,8 @@ _MIGRATIONS: list[tuple[str, str, str]] = [
     ("tasks", "category", "TEXT NOT NULL DEFAULT ''"),
     ("tasks", "project", "TEXT NOT NULL DEFAULT ''"),
     ("tasks", "completed_at", "DATETIME"),
+    ("user_runtime_state", "last_screen_chat_id", "INTEGER"),
+    ("user_runtime_state", "last_screen_message_id", "INTEGER"),
 ]
 
 
