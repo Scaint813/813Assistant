@@ -202,3 +202,67 @@ async def get_or_create_miro_mapping(session: AsyncSession, user_id: int, entity
     session.add(row)
     await session.flush()
     return row
+
+
+async def get_user_profile(session: AsyncSession, user_id: int) -> UserProfile | None:
+    res = await session.execute(select(UserProfile).where(UserProfile.user_id == user_id))
+    return res.scalar_one_or_none()
+
+
+async def get_archived_problem_blocks(session: AsyncSession, user_id: int) -> list[ProblemBlock]:
+    res = await session.execute(
+        select(ProblemBlock).where(
+            and_(ProblemBlock.user_id == user_id, ProblemBlock.status.in_(["archived", "expired", "done"]))
+        ).order_by(ProblemBlock.archived_at.desc())
+    )
+    return list(res.scalars().all())
+
+
+async def get_done_reminders_count(session: AsyncSession, user_id: int) -> int:
+    from sqlalchemy import func
+    res = await session.execute(
+        select(func.count()).where(
+            and_(Reminder.user_id == user_id, Reminder.status.in_(["done", "cancelled"]))
+        )
+    )
+    return res.scalar_one() or 0
+
+
+async def get_tasks_by_keywords(session: AsyncSession, user_id: int, keywords: list[str]) -> list[Task]:
+    """Return active tasks whose title contains any of the keywords (case-insensitive)."""
+    from sqlalchemy import or_
+    filters = [Task.title.ilike(f"%{kw}%") for kw in keywords]
+    res = await session.execute(
+        select(Task).where(and_(Task.user_id == user_id, Task.status == "active", or_(*filters)))
+        .order_by(Task.created_at.desc())
+    )
+    return list(res.scalars().all())
+
+
+async def get_reminders_by_keywords(session: AsyncSession, user_id: int, keywords: list[str]) -> list[Reminder]:
+    """Return active reminders whose text contains any of the keywords (case-insensitive)."""
+    from sqlalchemy import or_
+    filters = [Reminder.text.ilike(f"%{kw}%") for kw in keywords]
+    res = await session.execute(
+        select(Reminder).where(and_(Reminder.user_id == user_id, Reminder.status == "active", or_(*filters)))
+        .order_by(Reminder.remind_at.asc())
+    )
+    return list(res.scalars().all())
+
+
+async def get_problem_blocks_by_categories(session: AsyncSession, user_id: int, categories: list[str], now: datetime) -> list[ProblemBlock]:
+    """Return active problem blocks matching given categories."""
+    from sqlalchemy import or_
+    filters = [ProblemBlock.category == cat for cat in categories]
+    res = await session.execute(
+        select(ProblemBlock).where(
+            and_(
+                ProblemBlock.user_id == user_id,
+                ProblemBlock.status == "active",
+                (ProblemBlock.deadline.is_(None) | (ProblemBlock.deadline >= now)),
+                or_(*filters),
+            )
+        ).order_by(ProblemBlock.created_at.desc())
+    )
+    return list(res.scalars().all())
+

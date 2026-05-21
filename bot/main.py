@@ -12,6 +12,7 @@ from bot.config import get_config
 from bot.database.migrations import create_schema
 from bot.handlers import domains, menu, quick_note, reminders, start, voice
 from bot.handlers import health as health_handler
+from bot.handlers import settings as settings_handler
 from bot.middlewares import AccessMiddleware
 from bot.services.ai_service import AIService
 from bot.services.cleanup_service import CleanupService
@@ -27,6 +28,7 @@ from bot.services.reminder_scheduler import ReminderScheduler
 from bot.services.screen_service import ScreenService
 from bot.services.time_service import TimeService
 from bot.services.transcription_service import TranscriptionService
+from bot.services.preferences_service import PreferencesService
 
 
 async def main() -> None:
@@ -57,6 +59,7 @@ async def main() -> None:
     # ── 5. Handlers ────────────────────────────────────────────────────────
     dp.include_router(start.router)
     dp.include_router(health_handler.router)
+    dp.include_router(settings_handler.router)
     dp.include_router(reminders.router)
     dp.include_router(menu.router)
     dp.include_router(domains.router)
@@ -117,6 +120,7 @@ async def main() -> None:
     dp["next_step_service"] = next_step_service
     dp["checkin_service"] = checkin_service
     dp["screen_service"] = ScreenService()
+    dp["preferences_service"] = PreferencesService()
 
     log.info(
         "Services: OpenAI=%s | Miro=%s | Transcription=%s",
