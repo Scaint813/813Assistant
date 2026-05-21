@@ -153,3 +153,30 @@ class MiroMapping(Base, TimestampMixin):
     item_id: Mapped[str] = mapped_column(String(128), default="")
     x: Mapped[int] = mapped_column(Integer, default=0)
     y: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class ExamDate(Base, TimestampMixin):
+    """Stores EGE/exam dates per subject. NOT stored as reminders."""
+    __tablename__ = "exam_dates"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(Integer, index=True)
+    subject: Mapped[str] = mapped_column(String(128))       # Обществознание, Русский...
+    exam_date: Mapped[date] = mapped_column(Date, index=True)
+    status: Mapped[str] = mapped_column(String(32), default="active")  # active | passed | cancelled
+    notes: Mapped[str] = mapped_column(Text, default="")
+
+
+class StudyScheduleItem(Base, TimestampMixin):
+    """Stores tutor sessions and recurring study slots. NOT stored as reminders."""
+    __tablename__ = "study_schedule_items"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(Integer, index=True)
+    subject: Mapped[str] = mapped_column(String(128))        # Английский, Общество...
+    title: Mapped[str] = mapped_column(String(255), default="")
+    weekday: Mapped[str] = mapped_column(String(16), default="")   # mon/tue/wed/thu/fri/sat/sun
+    time_str: Mapped[str] = mapped_column(String(16), default="")  # "18:00"
+    recurrence: Mapped[str] = mapped_column(String(32), default="weekly")  # weekly/once
+    tutor_name: Mapped[str] = mapped_column(String(128), default="")
+    location_or_link: Mapped[str] = mapped_column(String(255), default="")
+    status: Mapped[str] = mapped_column(String(32), default="active")  # active | paused | done
+    notes: Mapped[str] = mapped_column(Text, default="")

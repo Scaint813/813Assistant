@@ -7,8 +7,10 @@ from aiogram.filters import Command
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from bot.database.queries import (
+    get_active_exam_dates,
     get_active_problem_blocks,
     get_active_reminders,
+    get_active_study_schedule,
     get_active_tasks,
     get_archived_problem_blocks,
     get_archived_tasks,
@@ -607,37 +609,60 @@ async def section_orders(message, session_factory, time_service, screen_service,
 @router.message(F.text == "Учёба")
 async def section_study(message, session_factory, time_service, screen_service, bot):
     now = time_service.now()
+    today = now.date()
     async with session_factory() as session:
-        tasks = await get_tasks_by_keywords(session, message.from_user.id, STUDY_KEYWORDS)
-        reminders = await get_reminders_by_keywords(session, message.from_user.id, STUDY_KEYWORDS)
-        blocks = await get_problem_blocks_by_categories(
-            session, message.from_user.id, ["study", "exam", "learning", "education"], now
+        exams = await get_active_exam_dates(session, message.from_user.id)
+        schedule = await get_active_study_schedule(session, message.from_user.id)
+        study_blocks = await get_problem_blocks_by_categories(
+            session, message.from_user.id, ["exam", "study", "learning", "education"], now
         )
-    lines = [
-        "УЧЁБА",
-        "",
-        "Фокус:",
-        "ошибки, повторение, дедлайны, подготовка.",
-        "",
-        "Сейчас:",
-        f"— учебных задач: {len(tasks)}",
-        f"— активных блоков: {len(blocks)}",
-        f"— напоминаний: {len(reminders)}",
-        "",
-        "Доступно:",
-        "1. Записать ошибку.",
-        "2. Создать активный блок подготовки.",
-        "3. Поставить повторение.",
-        "4. Получить следующий шаг.",
-        "",
-        "Быстрый ввод:",
-        "\"ошибка по обществу 24: план слишком общий\"",
-        "\"по русскому проблема с комментарием\"",
-        "\"завтра напомни повторить английский\"",
-    ]
-    if tasks:
-        lines += ["", "Активные:"] + [f"— {t.title}" for t in tasks[:3]]
-    kb = _study_kb(bool(blocks))
+
+    lines = ["УЧЁБА", ""]
+
+    if exams:
+        lines.append("Экзамены:")
+        for i, e in enumerate(exams, 1):
+            days_left = (e.exam_date - today).days
+            days_str = f", осталось {days_left} дн." if days_left >= 0 else " (прошло)"
+            lines.append(f"{i}. {e.subject} — {e.exam_date.strftime('%d.%m.%Y')}{days_str}")
+        lines.append("")
+    else:
+        lines += ["Экзамены:", "— ещё не зафиксированы.", ""]
+
+    if schedule:
+        _WDAY = {"mon": "пн", "tue": "вт", "wed": "ср", "thu": "чт", "fri": "пт", "sat": "сб", "sun": "вс"}
+        lines.append("Занятия:")
+        for i, s in enumerate(schedule, 1):
+            wd = _WDAY.get(s.weekday or "", s.weekday or "")
+            t = s.time_str or ""
+            tutor = f" ({s.tutor_name})" if s.tutor_name else ""
+            lines.append(f"{i}. {s.subject} — {wd}, {t}{tutor}")
+        lines.append("")
+    else:
+        lines += ["Занятия с репетитором: не зафиксированы.", ""]
+
+    if study_blocks:
+        lines.append("Активные блоки:")
+        for i, b in enumerate(study_blocks, 1):
+            lines.append(f"{i}. {b.title}")
+            if b.next_action:
+                lines.append(f"   Следующий шаг: {b.next_action[:80]}")
+        lines.append("")
+    else:
+        lines += ["Активные блоки: нет.", ""]
+
+    if not exams and not schedule and not study_blocks:
+        lines = [
+            "УЧЁБА", "",
+            "Данные ещё не зафиксированы.", "",
+            "Можно написать:",
+            '"ЕГЭ по обществу 10 июня, проблема с 24 заданием"',
+            '"репетитор по английскому по вторникам в 18:00"',
+        ]
+    else:
+        lines += ["Быстрый ввод:", '"проблема с 24 заданием по обществу"', '"ЕГЭ по русскому 3 июня"']
+
+    kb = _study_kb(bool(study_blocks))
     async with session_factory() as session:
         await screen_service.render_screen(
             bot=bot, session=session,
@@ -647,6 +672,7 @@ async def section_study(message, session_factory, time_service, screen_service, 
         )
         await session.commit()
     await screen_service.delete_user_input(message)
+
 
 
 @router.message(F.text == "Тело")

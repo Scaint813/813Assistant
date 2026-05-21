@@ -11,7 +11,11 @@ from bot.database.queries import (
     get_active_problem_blocks,
     get_active_reminders,
     get_active_tasks,
+    get_all_exam_dates,
+    get_all_study_schedule,
+    get_archived_tasks,
     get_or_create_runtime_state,
+    get_upcoming_overrides,
 )
 
 logger = logging.getLogger(__name__)
@@ -194,4 +198,86 @@ async def miro_debug_cmd(message: Message, miro_service, config, screen_service)
         "Логи: journalctl -u 813assistant -n 120 --no-pager",
     ]
     await message.answer("\n".join(lines))
+    await screen_service.delete_user_input(message)
+
+
+@router.message(Command("debug_db_state"))
+async def debug_db_state_cmd(message: Message, session_factory, time_service, config, screen_service):
+    """
+    Debug command: show raw DB state for ALLOWED_USER_ID only.
+    Safe: never shows tokens/passwords.
+    """
+    if message.from_user.id != config.allowed_user_id:
+        return
+    now = time_service.now()
+    lines = ["/debug_db_state", ""]
+
+    try:
+        async with session_factory() as session:
+            tasks = await get_active_tasks(session, message.from_user.id)
+            archived = await get_archived_tasks(session, message.from_user.id)
+            reminders = await get_active_reminders(session, message.from_user.id)
+            blocks = await get_active_problem_blocks(session, message.from_user.id, now)
+            exams = await get_all_exam_dates(session, message.from_user.id)
+            schedule = await get_all_study_schedule(session, message.from_user.id)
+            overrides = await get_upcoming_overrides(session, message.from_user.id, now.date())
+            await session.commit()
+    except Exception as exc:
+        await message.answer(f"DB error: {exc}")
+        return
+
+    # Tasks
+    lines.append(f"TASKS (active: {len(tasks)}, archived: {len(archived)}):")
+    for t in tasks[:10]:
+        dl = t.deadline.strftime("%Y-%m-%d") if t.deadline else "—"
+        lines.append(f"  [{t.id}] {t.title[:50]} | cat={t.category} | pr={t.priority} | dl={dl} | st={t.status}")
+    if not tasks:
+        lines.append("  (none)")
+    lines.append("")
+
+    # Reminders
+    lines.append(f"REMINDERS (active: {len(reminders)}):")
+    for r in reminders[:10]:
+        lines.append(f"  [{r.id}] {r.text[:50]} | at={r.remind_at.strftime('%Y-%m-%d %H:%M')} | st={r.status}")
+    if not reminders:
+        lines.append("  (none)")
+    lines.append("")
+
+    # Problem blocks
+    lines.append(f"PROBLEM BLOCKS (active: {len(blocks)}):")
+    for b in blocks[:10]:
+        dl = b.deadline.strftime("%Y-%m-%d") if b.deadline else "—"
+        lines.append(f"  [{b.id}] {b.title[:50]} | cat={b.category} | pr={b.priority} | dl={dl}")
+        lines.append(f"      next: {b.next_action[:50]}")
+    if not blocks:
+        lines.append("  (none)")
+    lines.append("")
+
+    # Exam dates
+    lines.append(f"EXAM DATES ({len(exams)}):")
+    for e in exams:
+        lines.append(f"  [{e.id}] {e.subject} | {e.exam_date} | st={e.status}")
+    if not exams:
+        lines.append("  (none)")
+    lines.append("")
+
+    # Study schedule
+    lines.append(f"STUDY SCHEDULE ({len(schedule)}):")
+    for s in schedule:
+        lines.append(f"  [{s.id}] {s.subject} | {s.weekday} {s.time_str} | tutor={s.tutor_name} | st={s.status}")
+    if not schedule:
+        lines.append("  (none)")
+    lines.append("")
+
+    # Schedule overrides
+    lines.append(f"SCHEDULE OVERRIDES ({len(overrides)}):")
+    for o in overrides[:5]:
+        lines.append(f"  [{o.id}] {o.date} | {o.mode}")
+    if not overrides:
+        lines.append("  (none)")
+
+    # Send in chunks (Telegram 4096 char limit)
+    text = "\n".join(lines)
+    for i in range(0, len(text), 3800):
+        await message.answer(text[i:i+3800])
     await screen_service.delete_user_input(message)

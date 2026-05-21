@@ -6,6 +6,15 @@ from typing import Any
 from bot.database.queries import get_active_tasks, get_reminders_for_date, get_upcoming_overrides
 from bot.services.time_service import TimeService
 
+_ALLOWED_INTENT_TYPES = {
+    "create_task", "create_reminder", "rest_day", "schedule_override",
+    "show_today", "show_tasks", "do_nothing",
+    "create_problem_block", "update_problem_block", "complete_problem_block",
+    "archive_problem_block", "show_problem_blocks",
+    "get_problem_solution", "get_problem_resources",
+    "set_exam_date", "create_study_schedule_item",
+}
+
 
 class IntentParser:
     def __init__(self, ai_service, time_service: TimeService):
@@ -26,26 +35,34 @@ class IntentParser:
         for intent in intents:
             item = dict(intent)
             t = item.get("type")
-            if t not in {"create_task", "create_reminder", "rest_day", "schedule_override", "show_today", "show_tasks", "do_nothing", "create_problem_block", "update_problem_block", "complete_problem_block", "archive_problem_block", "show_problem_blocks", "get_problem_solution", "get_problem_resources"}:
+
+            # Unknown intent type → re-run fallback for whole text
+            if t not in _ALLOWED_INTENT_TYPES:
                 return {"transcript": text, "intents": self.ai_service.parse_intent_fallback(text).get("intents", [])}
 
+            # ── Normalize reminder ────────────────────────────────────────────
             if t == "create_reminder":
                 remind_at = self.time_service.parse_datetime_any(item.get("remind_at"))
                 if remind_at is None:
                     date_label = item.get("date") or ("tomorrow" if "завтра" in text.lower() else "today")
-                    time_label = item.get("time") or ("morning" if "утр" in text.lower() else "evening" if "веч" in text.lower() else "evening")
+                    time_label = item.get("time") or ("morning" if "утр" in text.lower() else "evening")
                     if "через два дня" in text.lower() or "через 2 дня" in text.lower():
                         date_label = "через 2 дня"
                     remind_at = self.time_service.build_datetime(date_label, time_label)
                 item["remind_at"] = remind_at.isoformat()
                 item["priority"] = item.get("priority") or "medium"
 
+            # ── Normalize rest_day ────────────────────────────────────────────
             if t == "rest_day":
-                day = self.time_service.parse_relative_date(item.get("date") or ("tomorrow" if "завтра" in text.lower() else "today"))
+                day = self.time_service.parse_relative_date(
+                    item.get("date") or ("tomorrow" if "завтра" in text.lower() else "today")
+                )
                 item["override_date"] = day.isoformat()
                 item["mode"] = "rest_day"
                 item["create_tasks"] = False
                 item["write_to_miro"] = False
+
+            # ── Normalize problem block ───────────────────────────────────────
             if t == "create_problem_block":
                 item["category"] = item.get("category") or "other"
                 item["priority"] = item.get("priority") or "medium"
@@ -58,6 +75,22 @@ class IntentParser:
                     parsed_deadline = self.time_service.parse_datetime_any(item.get("deadline"))
                     if parsed_deadline:
                         item["deadline"] = parsed_deadline.isoformat()
+
+            # ── Normalize exam date ───────────────────────────────────────────
+            if t == "set_exam_date":
+                item["subject"] = (item.get("subject") or "Предмет").strip()
+                if not item.get("exam_date"):
+                    # Try to parse from free text
+                    parsed_d = self.ai_service._parse_date_from_text(text.lower())
+                    item["exam_date"] = parsed_d or ""
+
+            # ── Normalize study schedule ──────────────────────────────────────
+            if t == "create_study_schedule_item":
+                item["subject"] = (item.get("subject") or "Предмет").strip()
+                item["weekday"] = item.get("weekday") or "mon"
+                item["time_str"] = item.get("time_str") or ""
+                item["recurrence"] = item.get("recurrence") or "weekly"
+                item["tutor_name"] = item.get("tutor_name") or ""
 
             normalized.append(item)
 

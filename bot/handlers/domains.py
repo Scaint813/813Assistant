@@ -8,8 +8,10 @@ from aiogram.filters import Command
 from aiogram.types import CallbackQuery, Message
 
 from bot.database.queries import (
+    create_exam_date,
     create_reminder,
     create_schedule_override,
+    create_study_schedule_item,
     create_task,
     find_task_by_title,
     get_active_tasks,
@@ -100,6 +102,30 @@ async def confirm_preview(callback: CallbackQuery, session_factory, reminder_sch
                 )
                 created_problem_blocks.append(block)
 
+            elif t == "set_exam_date":
+                subject = intent.get("subject") or "Предмет"
+                exam_date_str = intent.get("exam_date") or ""
+                if exam_date_str:
+                    from datetime import date as _date
+                    try:
+                        exam_date = _date.fromisoformat(exam_date_str)
+                        await create_exam_date(session, callback.from_user.id, subject, exam_date)
+                    except ValueError:
+                        import logging
+                        logging.getLogger(__name__).warning("Invalid exam_date: %s", exam_date_str)
+
+            elif t == "create_study_schedule_item":
+                subject = intent.get("subject") or "Предмет"
+                await create_study_schedule_item(
+                    session, callback.from_user.id, subject,
+                    title=intent.get("title") or f"{subject} — занятие",
+                    weekday=intent.get("weekday") or "mon",
+                    time_str=intent.get("time_str") or "",
+                    recurrence=intent.get("recurrence") or "weekly",
+                    tutor_name=intent.get("tutor_name") or "",
+                    location_or_link=intent.get("location_or_link") or "",
+                )
+
         preview.status = "confirmed"
         await session.commit()
 
@@ -107,16 +133,28 @@ async def confirm_preview(callback: CallbackQuery, session_factory, reminder_sch
         if reminder.remind_at > time_service.now():
             reminder_scheduler.schedule_reminder(reminder)
 
-    # Determine result text and remove inline buttons from preview message
-    if created_reminders:
+    # ── Determine result text ─────────────────────────────────────────────────
+    intents_types = {i.get("type") for i in payload.get("intents", [])}
+    has_study = bool(intents_types & {"set_exam_date", "create_study_schedule_item"})
+    if has_study or created_problem_blocks:
+        parts = []
+        if has_study:
+            n_exams = sum(1 for i in payload.get("intents", []) if i.get("type") == "set_exam_date")
+            n_sched = sum(1 for i in payload.get("intents", []) if i.get("type") == "create_study_schedule_item")
+            if n_exams:
+                parts.append(f"экзаменов: {n_exams}")
+            if n_sched:
+                parts.append(f"занятий: {n_sched}")
+        if created_problem_blocks:
+            parts.append(f"блоков: {len(created_problem_blocks)}")
+        result_text = "Учебный контур сохранён. " + ", ".join(parts) + ".\n\nСмотри: /study"
+    elif created_reminders:
         if any(r.remind_at <= time_service.now() for r in created_reminders):
             result_text = "Напоминание создано, но время уже прошло. Проверь дату/время."
         else:
             result_text = "Готово. Напоминание создано."
     elif any(i.get("type") in {"schedule_override", "rest_day"} for i in payload.get("intents", [])):
         result_text = "Готово, день отдыха сохранён."
-    elif created_problem_blocks:
-        result_text = "Зафиксировал проблему."
     else:
         result_text = "Готово. Задача создана."
 
@@ -513,6 +551,14 @@ async def sync_miro(message: Message, session_factory, miro_service, time_servic
             f"\nЧасть элементов не создана: {errors}.\nСмотри логи:\njournalctl -u 813assistant -n 120 --no-pager"
             if errors > 0 else "\nПроверь доску в Miro."
         )
+        study_part = ""
+        if stats.get("exams", 0) or stats.get("schedule_items", 0) or stats.get("study_blocks", 0):
+            study_part = (
+                f"\n\nУчёба:\n"
+                f"Экзаменов: {stats.get('exams', 0)}\n"
+                f"Занятий: {stats.get('schedule_items', 0)}\n"
+                f"Блоков: {stats.get('study_blocks', 0)}"
+            )
         await message.answer(
             f"{result_header}\n\n"
             f"Секции: {stats.get('sections', 0)}\n"
@@ -520,6 +566,7 @@ async def sync_miro(message: Message, session_factory, miro_service, time_servic
             f"Создано: {stats.get('created', 0)}\n"
             f"Обновлено: {stats.get('updated', 0)}\n"
             f"Ошибки: {errors}"
+            f"{study_part}"
             f"{footer}"
         )
     except Exception:

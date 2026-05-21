@@ -29,14 +29,17 @@ from typing import Literal
 import httpx
 
 from bot.database.queries import (
+    get_active_exam_dates,
     get_active_problem_blocks,
     get_active_reminders,
+    get_active_study_schedule,
     get_active_tasks,
     get_archived_tasks,
     get_done_reminders_count,
     get_archived_problem_blocks,
     get_or_create_miro_mapping,
     get_or_create_runtime_state,
+    get_problem_blocks_by_categories,
     get_upcoming_overrides,
 )
 
@@ -655,32 +658,72 @@ class MiroService:
 
         tasks = await get_active_tasks(session, user_id)
         blocks = await get_active_problem_blocks(session, user_id, now)
+        exams = await get_active_exam_dates(session, user_id)
+        schedule = await get_active_study_schedule(session, user_id)
 
         money_tasks = sum(1 for t in tasks if any(kw in t.title.lower() for kw in ["оплата", "деньги", "платёж"]))
         orders_tasks = sum(1 for t in tasks if any(kw in t.title.lower() for kw in ["заказ", "клиент", "доставка"]))
-        study_tasks = sum(1 for t in tasks if any(kw in t.title.lower() for kw in ["учёба", "экзамен", "егэ", "ошибка"]))
         body_tasks = sum(1 for t in tasks if any(kw in t.title.lower() for kw in ["сон", "тело", "боль", "перегруз"]))
 
-        future_map = {
+        # ── STUDY: real exam/schedule data ────────────────────────────────────
+        await self._render_section_header(session, user_id, "study", t_str, stats)
+        x0, y0 = self._card_xy("study", 0)
+        if exams or schedule:
+            from datetime import date as _date
+            today = now.date()
+            card_idx = 0
+            for e in exams[:4]:
+                days_left = (e.exam_date - today).days
+                days_str = f"осталось {days_left} дн." if days_left >= 0 else "прошло"
+                color = "red" if days_left <= 14 else ("orange" if days_left <= 30 else "light_blue")
+                content = f"ЭКЗАМЕН\n{e.subject}\nдата: {e.exam_date.strftime('%d.%m.%Y')}\n{days_str}"
+                x, y = self._card_xy("study", card_idx)
+                mp = await self._get_mapping(session, user_id, "exam_date", e.id)
+                new_id, _ = await self._create_or_update_sticky(
+                    mp.item_id, content, x, y, color, "exam_date", e.id, stats,
+                )
+                await self._save_mapping(mp, new_id or mp.item_id, x, y)
+                stats["cards"] += 1
+                card_idx += 1
+            _WDAY = {"mon": "пн", "tue": "вт", "wed": "ср", "thu": "чт", "fri": "пт", "sat": "сб", "sun": "вс"}
+            for s in schedule[:3]:
+                wd = _WDAY.get(s.weekday or "", s.weekday or "")
+                content = f"ЗАНЯТИЕ\n{s.subject}\n{wd}, {s.time_str}"
+                if s.tutor_name:
+                    content += f"\n{s.tutor_name}"
+                x, y = self._card_xy("study", card_idx)
+                mp = await self._get_mapping(session, user_id, "study_schedule_item", s.id)
+                new_id, _ = await self._create_or_update_sticky(
+                    mp.item_id, content, x, y, "light_green", "study_schedule_item", s.id, stats,
+                )
+                await self._save_mapping(mp, new_id or mp.item_id, x, y)
+                stats["cards"] += 1
+                card_idx += 1
+        else:
+            mp = await self._get_mapping(session, user_id, "miro_study_card", _SECTION_ENTITY_IDS["study_card"])
+            content = "УЧЁБА\n\nэкзамены не зафиксированы.\nНапиши: \"ЕГЭ по обществу 10 июня\""
+            new_id, _ = await self._create_or_update_sticky(
+                mp.item_id, content, x0, y0, "light_gray", "miro_study_card",
+                _SECTION_ENTITY_IDS["study_card"], stats,
+            )
+            await self._save_mapping(mp, new_id or mp.item_id, x0, y0)
+            stats["cards"] += 1
+
+        # ── Other sections ────────────────────────────────────────────────────
+        other_map = {
             "money":     (money_tasks,  "ДЕНЬГИ",     "платежи и расчёты"),
             "orders":    (orders_tasks, "ЗАКАЗЫ",     "клиенты и доставки"),
-            "study":     (study_tasks,  "УЧЁБА",      "подготовка и ошибки"),
             "body":      (body_tasks,   "ТЕЛО",       "сон и восстановление"),
             "protocols": (0,            "ПРОТОКОЛЫ",  "сценарии поведения"),
         }
-
-        for key, (n_tasks, label, focus) in future_map.items():
+        for key, (n_tasks, label, focus) in other_map.items():
             await self._render_section_header(session, user_id, key, t_str, stats)
             x, y = self._card_xy(key, 0)
-            mp = await self._get_mapping(
-                session, user_id,
-                f"miro_{key}_card",
-                _SECTION_ENTITY_IDS[f"{key}_card"],
-            )
+            mp = await self._get_mapping(session, user_id, f"miro_{key}_card", _SECTION_ENTITY_IDS[f"{key}_card"])
             content = f"{label}\n\nфокус: {focus}\nактивных задач: {n_tasks}\nактивных блоков: {len(blocks)}"
             new_id, _ = await self._create_or_update_sticky(
-                mp.item_id, content, x, y, "light_gray",
-                f"miro_{key}_card", _SECTION_ENTITY_IDS[f"{key}_card"], stats,
+                mp.item_id, content, x, y, "light_gray", f"miro_{key}_card",
+                _SECTION_ENTITY_IDS[f"{key}_card"], stats,
             )
             await self._save_mapping(mp, new_id or mp.item_id, x, y)
             stats["cards"] += 1
@@ -688,8 +731,20 @@ class MiroService:
     # ── Public: sync_all ──────────────────────────────────────────────────────
 
     async def sync_all(self, user_id: int, session, time_service, cfg, next_step_service=None) -> dict:
-        stats = {"sections": 0, "cards": 0, "created": 0, "updated": 0, "errors": 0}
+        stats = {"sections": 0, "cards": 0, "created": 0, "updated": 0, "errors": 0,
+                 "exams": 0, "schedule_items": 0, "study_blocks": 0}
         now = time_service.now()
+
+        # Pre-count study data for report
+        try:
+            exams_list = await get_active_exam_dates(session, user_id)
+            schedule_list = await get_active_study_schedule(session, user_id)
+            study_blocks_list = await get_problem_blocks_by_categories(session, user_id, ["exam", "study"], now)
+            stats["exams"] = len(exams_list)
+            stats["schedule_items"] = len(schedule_list)
+            stats["study_blocks"] = len(study_blocks_list)
+        except Exception:
+            pass
 
         await self._render_board_header(session, user_id, now, stats)
         await self._render_today_section(session, user_id, time_service, stats)

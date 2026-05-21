@@ -6,7 +6,7 @@ from datetime import date, datetime, timedelta
 from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from bot.database.models import CleanupLog, MiroMapping, PendingPreview, ProblemBlock, ProblemBlockEvent, Reminder, ScheduleOverride, Task, UserProfile, UserRuntimeState
+from bot.database.models import CleanupLog, ExamDate, MiroMapping, PendingPreview, ProblemBlock, ProblemBlockEvent, Reminder, ScheduleOverride, StudyScheduleItem, Task, UserProfile, UserRuntimeState
 
 
 async def get_or_create_user_profile(session: AsyncSession, user_id: int, name: str, timezone: str) -> UserProfile:
@@ -266,3 +266,77 @@ async def get_problem_blocks_by_categories(session: AsyncSession, user_id: int, 
     )
     return list(res.scalars().all())
 
+
+# -- ExamDate queries ---------------------------------------------------------
+
+async def create_exam_date(session, user_id, subject, exam_date, **kwargs):
+    from sqlalchemy import and_, select
+    from bot.database.models import ExamDate
+    res = await session.execute(
+        select(ExamDate).where(and_(ExamDate.user_id == user_id, ExamDate.subject == subject))
+    )
+    existing = res.scalar_one_or_none()
+    if existing:
+        existing.exam_date = exam_date
+        existing.status = "active"
+        for k, v in kwargs.items():
+            setattr(existing, k, v)
+        await session.flush()
+        return existing
+    row = ExamDate(user_id=user_id, subject=subject, exam_date=exam_date, **kwargs)
+    session.add(row)
+    await session.flush()
+    return row
+
+
+async def get_active_exam_dates(session, user_id):
+    from datetime import date as _date
+    from sqlalchemy import and_, select
+    from bot.database.models import ExamDate
+    res = await session.execute(
+        select(ExamDate).where(
+            and_(ExamDate.user_id == user_id, ExamDate.status == "active",
+                 ExamDate.exam_date >= _date.today())
+        ).order_by(ExamDate.exam_date.asc())
+    )
+    return list(res.scalars().all())
+
+
+async def get_all_exam_dates(session, user_id):
+    from sqlalchemy import select
+    from bot.database.models import ExamDate
+    res = await session.execute(
+        select(ExamDate).where(ExamDate.user_id == user_id).order_by(ExamDate.exam_date.asc())
+    )
+    return list(res.scalars().all())
+
+
+# -- StudyScheduleItem queries ------------------------------------------------
+
+async def create_study_schedule_item(session, user_id, subject, **kwargs):
+    from bot.database.models import StudyScheduleItem
+    row = StudyScheduleItem(user_id=user_id, subject=subject, **kwargs)
+    session.add(row)
+    await session.flush()
+    return row
+
+
+async def get_active_study_schedule(session, user_id):
+    from sqlalchemy import and_, select
+    from bot.database.models import StudyScheduleItem
+    res = await session.execute(
+        select(StudyScheduleItem).where(
+            and_(StudyScheduleItem.user_id == user_id, StudyScheduleItem.status == "active")
+        ).order_by(StudyScheduleItem.subject.asc())
+    )
+    return list(res.scalars().all())
+
+
+async def get_all_study_schedule(session, user_id):
+    from sqlalchemy import select
+    from bot.database.models import StudyScheduleItem
+    res = await session.execute(
+        select(StudyScheduleItem).where(StudyScheduleItem.user_id == user_id)
+        .order_by(StudyScheduleItem.subject.asc())
+    )
+    return list(res.scalars().all())
