@@ -436,9 +436,9 @@ class MiroService:
             return {"status_code": None, "item_id": None, "error": str(exc)[:200]}
 
     async def debug_get_items(self) -> dict:
-        """GET /v2/boards/{id}/items?limit=1 for connectivity check."""
+        """GET /v2/boards/{id}/items?limit=10 for connectivity check (Miro minimum page size is 10)."""
         headers = self._headers()
-        url = f"https://api.miro.com/v2/boards/{self.board_id}/items?limit=1"
+        url = f"https://api.miro.com/v2/boards/{self.board_id}/items?limit=10"
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 r = await client.get(url, headers=headers)
