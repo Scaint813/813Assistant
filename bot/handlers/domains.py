@@ -489,32 +489,38 @@ async def cleanup(message: Message, session_factory, cleanup_service, time_servi
 
 
 @router.message(Command("sync_miro"))
-async def sync_miro(message: Message, session_factory, miro_service, time_service, config, screen_service):
+async def sync_miro(message: Message, session_factory, miro_service, time_service, config, next_step_service, screen_service):
     if not miro_service.is_configured():
         await message.answer("Miro не настроен.\n\nНужно заполнить:\nMIRO_ACCESS_TOKEN\nMIRO_BOARD_ID")
         await screen_service.delete_user_input(message)
         return
     try:
         async with session_factory() as session:
-            stats = await miro_service.sync_all(message.from_user.id, session, time_service, config)
+            stats = await miro_service.sync_all(
+                message.from_user.id, session, time_service, config,
+                next_step_service=next_step_service,
+            )
             await session.commit()
         errors = stats.get("errors", 0)
-        if errors > 0:
+        total_items = stats.get("created", 0) + stats.get("updated", 0)
+        if total_items == 0 and errors > 0:
+            result_header = "Miro: синхронизация не удалась."
+        elif errors > 0:
             result_header = "Miro обновлён частично."
-            result_footer = f"\nЧасть элементов не создана: {errors}. Ошибка записана в лог.\nДиагностика: /miro_debug"
         else:
             result_header = "Miro обновлён."
-            result_footer = "\nСледующий шаг: проверить Штаб в Miro."
+        footer = (
+            f"\nЧасть элементов не создана: {errors}.\nСмотри логи:\njournalctl -u 813assistant -n 120 --no-pager"
+            if errors > 0 else "\nПроверь доску в Miro."
+        )
         await message.answer(
             f"{result_header}\n\n"
+            f"Секции: {stats.get('sections', 0)}\n"
+            f"Карточки: {stats.get('cards', 0)}\n"
             f"Создано: {stats.get('created', 0)}\n"
             f"Обновлено: {stats.get('updated', 0)}\n"
-            f"Ошибки: {errors}\n\n"
-            f"Задачи: {stats.get('tasks', 0)} | "
-            f"Напоминания: {stats.get('reminders', 0)} | "
-            f"Проблемы: {stats.get('problems', 0)} | "
-            f"Архив: {stats.get('archive', 0)}"
-            f"{result_footer}"
+            f"Ошибки: {errors}"
+            f"{footer}"
         )
     except Exception:
         import logging

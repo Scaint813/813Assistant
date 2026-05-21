@@ -341,28 +341,36 @@ async def settings_miro(callback: CallbackQuery, miro_service, config):
 
 
 @router.callback_query(F.data == "do_sync_miro")
-async def do_sync_miro(callback: CallbackQuery, session_factory, miro_service, time_service, config):
+async def do_sync_miro(callback: CallbackQuery, session_factory, miro_service, time_service, config, next_step_service):
     await callback.answer("Синхронизирую...")
     if not miro_service.is_configured():
         await callback.message.edit_text("Miro не настроен.", reply_markup=_miro_kb(False))
         return
     try:
         async with session_factory() as session:
-            stats = await miro_service.sync_all(callback.from_user.id, session, time_service, config)
+            stats = await miro_service.sync_all(
+                callback.from_user.id, session, time_service, config,
+                next_step_service=next_step_service,
+            )
             await session.commit()
         errors = stats.get("errors", 0)
-        status = "Синхронизация завершена." if errors == 0 else f"Синхронизация завершена частично.\nОшибки: {errors} — /miro_debug"
+        total_items = stats.get("created", 0) + stats.get("updated", 0)
+        if total_items == 0 and errors > 0:
+            status = "Синхронизация не удалась."
+        elif errors > 0:
+            status = f"Синхронизация завершена частично.\nОшибки: {errors} — /miro_debug"
+        else:
+            status = "Синхронизация завершена."
         text = (
             f"MIRO\n\n{status}\n\n"
+            f"Секции: {stats.get('sections', 0)}\n"
+            f"Карточки: {stats.get('cards', 0)}\n"
             f"Создано: {stats.get('created', 0)}\n"
-            f"Обновлено: {stats.get('updated', 0)}\n"
-            f"Задачи: {stats.get('tasks', 0)} | Напоминания: {stats.get('reminders', 0)}\n"
-            f"Проблемы: {stats.get('problems', 0)} | Архив: {stats.get('archive', 0)}"
+            f"Обновлено: {stats.get('updated', 0)}"
         )
     except Exception:
         text = "MIRO\n\nОшибка синхронизации. Проверь логи.\n/miro_debug — диагностика."
     await callback.message.edit_text(text, reply_markup=_miro_kb(miro_service.is_configured()))
-
 
 
 @router.callback_query(F.data == "settings_health")

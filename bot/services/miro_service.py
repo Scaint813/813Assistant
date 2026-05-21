@@ -1,7 +1,30 @@
 from __future__ import annotations
 
+"""
+MiroService — visual HQ panel for 813Assistant.
+
+Concept:
+  Telegram bot = Operator  (receives data, makes decisions, persists entities)
+  Miro board   = Illustrator (shows state, never invents entities)
+
+Layout (3-column grid):
+
+  Row 0:  [ШТАБ/TODAY]  [СЛЕДУЮЩИЙ ШАГ]  [РИСКИ]
+  Row 1:  [ЗАДАЧИ]      [НАПОМИНАНИЯ]    [ПРОБЛЕМЫ]
+  Row 2:  [РАСПИСАНИЕ]  [CHECK-INS]      [АРХИВ]
+  Row 3:  [ДЕНЬГИ] [ЗАКАЗЫ] [УЧЁБА] [ТЕЛО] [ПРОТОКОЛЫ]
+
+Each section has:
+  - A shape-based header bar (wide, colored, bold label + "updated HH:MM")
+  - Sticky note cards for content items
+  - Empty-state sticky if no data
+
+Duplicates prevented by stable entity_type + entity_id stored in miro_mappings.
+"""
+
 import logging
 from datetime import datetime
+from typing import Literal
 
 import httpx
 
@@ -10,6 +33,8 @@ from bot.database.queries import (
     get_active_reminders,
     get_active_tasks,
     get_archived_tasks,
+    get_done_reminders_count,
+    get_archived_problem_blocks,
     get_or_create_miro_mapping,
     get_or_create_runtime_state,
     get_upcoming_overrides,
@@ -17,82 +42,90 @@ from bot.database.queries import (
 
 logger = logging.getLogger(__name__)
 
-# ── Miro API v2 fillColor whitelist ───────────────────────────────────────────
-# https://developers.miro.com/reference/create-sticky-note
-# Only these exact string values are accepted.
-VALID_FILL_COLORS = {
+# ── Grid constants ─────────────────────────────────────────────────────────────
+COL_STRIDE = 2100       # column pitch  (section_w=1800 + gap=300)
+ROW_STRIDE = 1700       # row pitch     (section_h=1400 + gap=300)
+
+SHAPE_W = 1800          # section header shape width
+SHAPE_H = 100           # section header shape height
+
+CARD_START_DY = 160     # first card Y offset from section origin
+CARD_STRIDE_DY = 380    # vertical pitch between consecutive cards
+
+MAX_TASKS = 7
+MAX_REMINDERS = 5
+MAX_PROBLEMS = 5
+MAX_SCHEDULE = 5
+
+# Board-header shape: above row-0, spanning 3 columns
+BOARD_HEADER_DY = -500  # relative to base_y
+BOARD_HEADER_W = COL_STRIDE * 3 - 300   # 6000
+
+# ── Section definitions ────────────────────────────────────────────────────────
+#   key -> (col, row, label, hex_fill, hex_text)
+SECTIONS: dict[str, tuple[int, int, str, str, str]] = {
+    "today":     (0, 0, "ШТАБ / TODAY",        "#7b44d8", "#ffffff"),
+    "next":      (1, 0, "СЛЕДУЮЩИЙ ШАГ",        "#2d9bf0", "#ffffff"),
+    "risks":     (2, 0, "РИСКИ",               "#d32f2f", "#ffffff"),
+    "tasks":     (0, 1, "ЗАДАЧИ",              "#f6c000", "#1a1a1a"),
+    "reminders": (1, 1, "НАПОМИНАНИЯ",          "#64b5f6", "#1a1a1a"),
+    "problems":  (2, 1, "ПРОБЛЕМНЫЕ БЛОКИ",     "#f57c00", "#ffffff"),
+    "schedule":  (0, 2, "РАСПИСАНИЕ",           "#66bb6a", "#1a1a1a"),
+    "checkins":  (1, 2, "CHECK-INS",            "#66bb6a", "#1a1a1a"),
+    "archive":   (2, 2, "АРХИВ",               "#90a4ae", "#ffffff"),
+    "money":     (0, 3, "ДЕНЬГИ",              "#b0bec5", "#1a1a1a"),
+    "orders":    (1, 3, "ЗАКАЗЫ",              "#b0bec5", "#1a1a1a"),
+    "study":     (2, 3, "УЧЁБА",              "#b0bec5", "#1a1a1a"),
+    "body":      (3, 3, "ТЕЛО",               "#b0bec5", "#1a1a1a"),
+    "protocols": (4, 3, "ПРОТОКОЛЫ",           "#b0bec5", "#1a1a1a"),
+}
+
+# ── Sticky note color whitelist ────────────────────────────────────────────────
+# Only these values accepted by Miro v2 sticky_notes API
+_STICKY_COLORS = {
     "red", "light_pink", "dark_red",
     "yellow", "light_yellow",
     "light_green", "green",
     "light_blue", "blue",
     "violet",
-    "light_gray", "gray", "black",
+    "light_gray",
     "white",
     "orange",
 }
 
-# Aliases for colors that are NOT in the whitelist → safe fallback
-COLOR_ALIAS: dict[str, str] = {
-    "light_yellow": "light_yellow",  # valid
-    "gray": "light_gray",            # "gray" is NOT valid in v2 — map to light_gray
-    "red": "red",
-    "yellow": "yellow",
-    "light_blue": "light_blue",
-    "light_green": "light_green",
-    "light_gray": "light_gray",
-    "white": "white",
-    "orange": "orange",
-    "violet": "violet",
+def _safe_sticky_color(color: str) -> str:
+    return color if color in _STICKY_COLORS else "light_gray"
+
+def _safe_content(text: str | None, max_len: int = 1000) -> str:
+    if not text or not isinstance(text, str):
+        return "—"
+    text = text.strip()
+    if not text:
+        return "—"
+    return text[:max_len - 3] + "..." if len(text) > max_len else text
+
+# ── Stable entity IDs for sections (never change → no duplicates on re-sync) ──
+# Range 5000-5999 reserved for Miro structural elements.
+_SECTION_ENTITY_IDS: dict[str, int] = {
+    "board_header":   5000,
+    "today_header":   5001,  "today_card":     5002,
+    "next_header":    5003,  "next_card":      5004,
+    "risks_header":   5005,  "risks_card":     5006,
+    "tasks_header":   5007,
+    "reminders_header": 5008,
+    "problems_header":  5009,
+    "schedule_header":  5010,
+    "checkins_header":  5011,  "checkins_card":  5012,
+    "archive_header":   5013,  "archive_card":   5014,
+    "money_header":     5015,  "money_card":     5016,
+    "orders_header":    5017,  "orders_card":    5018,
+    "study_header":     5019,  "study_card":     5020,
+    "body_header":      5021,  "body_card":      5022,
+    "protocols_header": 5023,  "protocols_card": 5024,
 }
-
-MAX_CONTENT_LEN = 1500  # Miro sticky note content limit (safe margin)
-
-
-def _safe_color(color: str) -> str:
-    """Map potentially invalid color name to a whitelisted Miro v2 value."""
-    mapped = COLOR_ALIAS.get(color, "light_gray")
-    if mapped not in VALID_FILL_COLORS:
-        return "light_gray"
-    return mapped
-
-
-def _safe_content(content: str | None) -> str:
-    """Ensure content is a non-empty string within safe length."""
-    if not content or not isinstance(content, str):
-        return "Без названия"
-    content = content.strip()
-    if not content:
-        return "Без названия"
-    if len(content) > MAX_CONTENT_LEN:
-        content = content[:MAX_CONTENT_LEN - 3] + "..."
-    return content
-
-
-def _safe_position(x, y, start_x: int) -> tuple[int, int]:
-    """Ensure x/y are valid integers >= start_x."""
-    try:
-        x = int(x)
-    except (TypeError, ValueError):
-        x = start_x
-    try:
-        y = int(y)
-    except (TypeError, ValueError):
-        y = 0
-    if x < start_x:
-        x = start_x
-    return x, y
 
 
 class MiroService:
-    FRAME_ORDER = [
-        ("today_summary", "ШТАБ / TODAY", 0),
-        ("tasks", "ЗАДАЧИ / TASKS", 3000),
-        ("reminders", "НАПОМИНАНИЯ / REMINDERS", 6000),
-        ("problem_blocks", "ПРОБЛЕМЫ / PROBLEM BLOCKS", 9000),
-        ("schedule", "РАСПИСАНИЕ / SCHEDULE", 12000),
-        ("checkin_summary", "CHECK-INS", 15000),
-        ("archive", "АРХИВ / ARCHIVE", 18000),
-    ]
 
     def __init__(self, token: str, board_id: str, start_x: int, start_y: int):
         self.token = token
@@ -103,330 +136,599 @@ class MiroService:
     def is_configured(self) -> bool:
         return bool(self.token and self.board_id)
 
+    # ── Position helpers ──────────────────────────────────────────────────────
+
+    def _section_xy(self, key: str) -> tuple[int, int]:
+        col, row, *_ = SECTIONS[key]
+        x = self.start_x + col * COL_STRIDE
+        y = self.start_y + row * ROW_STRIDE
+        return x, y
+
+    def _card_xy(self, section_key: str, card_index: int) -> tuple[int, int]:
+        sx, sy = self._section_xy(section_key)
+        return sx, sy + CARD_START_DY + card_index * CARD_STRIDE_DY
+
+    def _board_header_xy(self) -> tuple[int, int]:
+        return self.start_x, self.start_y + BOARD_HEADER_DY
+
+    # ── HTTP helpers ──────────────────────────────────────────────────────────
+
     def _headers(self) -> dict:
         return {"Authorization": f"Bearer {self.token}", "Content-Type": "application/json"}
 
-    # ── Public: sync_all ──────────────────────────────────────────────────────
+    async def _safe_request(
+        self,
+        method: Literal["post", "patch", "delete"],
+        url: str,
+        payload: dict | None,
+        entity_type: str,
+        entity_id: int,
+        stats: dict,
+    ) -> tuple[str | None, str]:
+        """
+        Execute a Miro API request safely.
+        Returns (item_id, op) where op = "created" | "updated" | "deleted" | "error".
+        Never raises. Logs errors without exposing the token.
+        """
+        try:
+            async with httpx.AsyncClient(timeout=20.0) as client:
+                fn = getattr(client, method)
+                r = await fn(url, headers=self._headers(), json=payload)
+        except httpx.RequestError as exc:
+            logger.error("Miro network error [%s id=%s %s]: %s", entity_type, entity_id, url, exc)
+            stats["errors"] += 1
+            return None, "error"
 
-    async def sync_all(self, user_id: int, session, time_service, cfg) -> dict:
-        stats = {
-            "tasks": 0, "reminders": 0, "problems": 0, "archive": 0,
-            "created": 0, "updated": 0, "errors": 0,
+        # Success paths
+        if method == "post" and r.status_code == 201:
+            item_id = r.json().get("id", "")
+            logger.debug("Miro POST 201 [%s id=%s] → %s", entity_type, entity_id, item_id)
+            return item_id, "created"
+
+        if method == "patch" and r.status_code < 400:
+            return None, "updated"  # item_id unchanged
+
+        if method == "delete" and r.status_code in (200, 204):
+            return None, "deleted"
+
+        # Error — log full detail (no token)
+        content_hint = ""
+        if payload:
+            data = payload.get("data", {})
+            content_hint = str(data.get("content", ""))[:80].replace("\n", " ")
+        logger.error(
+            "Miro %s FAIL [status=%d entity=%s id=%s] url=%s content=%r body=%s",
+            method.upper(), r.status_code, entity_type, entity_id,
+            url, content_hint, r.text[:400],
+        )
+        stats["errors"] += 1
+        return None, "error"
+
+    # ── Shape (section header) ────────────────────────────────────────────────
+
+    async def _create_or_update_shape(
+        self,
+        item_id: str,
+        content: str,
+        x: int, y: int,
+        width: int, height: int,
+        fill_hex: str,
+        text_hex: str,
+        entity_type: str,
+        entity_id: int,
+        stats: dict,
+    ) -> tuple[str | None, str]:
+        payload = {
+            "data": {"content": _safe_content(content), "format": "plain"},
+            "style": {
+                "fillColor": fill_hex,
+                "fillOpacity": "1.0",
+                "fontFamily": "roboto",
+                "fontSize": "18",
+                "textAlign": "left",
+                "textAlignVertical": "middle",
+                "color": text_hex,
+                "borderStyle": "normal",
+                "borderOpacity": "0.0",
+                "borderColor": fill_hex,
+                "borderWidth": "1",
+            },
+            "geometry": {"width": width, "height": height, "rotation": 0.0},
+            "position": {"x": x, "y": y, "origin": "start"},
         }
-        frames = await self.ensure_frames(user_id, session, stats)
-        await self.sync_today_frame(user_id, session, time_service, frames, stats)
-        stats["tasks"] = await self.sync_tasks(user_id, session, time_service, frames, stats)
-        stats["reminders"] = await self.sync_reminders(user_id, session, time_service, frames, stats)
-        stats["problems"] = await self.sync_problem_blocks(user_id, session, time_service, frames, stats)
-        await self.sync_schedule(user_id, session, time_service, frames, stats)
-        await self.sync_checkins(user_id, session, time_service, cfg, frames, stats)
-        stats["archive"] = await self.sync_archive(user_id, session, time_service, frames, stats)
-        return stats
+        base = f"https://api.miro.com/v2/boards/{self.board_id}/shapes"
 
-    # ── Frames ────────────────────────────────────────────────────────────────
+        # Try PATCH first (update existing)
+        if item_id:
+            _, op = await self._safe_request("patch", f"{base}/{item_id}", payload, entity_type, entity_id, stats)
+            if op == "updated":
+                stats["updated"] += 1
+                return item_id, "updated"
+            # Fall through to POST (item may have been deleted from board)
 
-    async def ensure_frames(self, user_id: int, session, stats: dict) -> dict:
-        out = {}
-        for key, title, offset in self.FRAME_ORDER:
-            x = self.start_x + offset
-            y = self.start_y
-            mp = await get_or_create_miro_mapping(session, user_id, "frame_header", offset, self.board_id)
-            item_id, op = await self.create_or_update_item(
-                mp.item_id, f"[{title}]", x, y, "light_gray",
-                entity_type="frame_header", entity_id=offset,
-            )
-            if item_id:
-                if op == "created":
-                    stats["created"] += 1
-                    mp.item_id = item_id
-                elif op == "updated":
-                    stats["updated"] += 1
-                mp.x = x
-                mp.y = y
-            else:
-                stats["errors"] += 1
-            out[key] = {"x": x, "y": y, "id": item_id}
-        return out
+        # POST (create)
+        new_id, op = await self._safe_request("post", base, payload, entity_type, entity_id, stats)
+        if op == "created":
+            stats["created"] += 1
+        return new_id, op
 
-    # ── Today summary ─────────────────────────────────────────────────────────
+    # ── Sticky note (content card) ────────────────────────────────────────────
 
-    async def sync_today_frame(self, user_id, session, time_service, frames, stats):
+    async def _create_or_update_sticky(
+        self,
+        item_id: str,
+        content: str,
+        x: int, y: int,
+        color: str,
+        entity_type: str,
+        entity_id: int,
+        stats: dict,
+    ) -> tuple[str | None, str]:
+        payload = {
+            "data": {"content": _safe_content(content)},
+            "position": {"x": x, "y": y},
+            "style": {"fillColor": _safe_sticky_color(color)},
+        }
+        base = f"https://api.miro.com/v2/boards/{self.board_id}/sticky_notes"
+
+        if item_id:
+            _, op = await self._safe_request("patch", f"{base}/{item_id}", payload, entity_type, entity_id, stats)
+            if op == "updated":
+                stats["updated"] += 1
+                return item_id, "updated"
+
+        new_id, op = await self._safe_request("post", base, payload, entity_type, entity_id, stats)
+        if op == "created":
+            stats["created"] += 1
+        return new_id, op
+
+    # ── Mapping helpers ───────────────────────────────────────────────────────
+
+    async def _get_mapping(self, session, user_id: int, entity_type: str, entity_id: int):
+        return await get_or_create_miro_mapping(session, user_id, entity_type, entity_id, self.board_id)
+
+    async def _save_mapping(self, mp, item_id: str, x: int, y: int):
+        if item_id:
+            mp.item_id = item_id
+        mp.x = x
+        mp.y = y
+
+    # ── Section header render ─────────────────────────────────────────────────
+
+    async def _render_section_header(
+        self,
+        session,
+        user_id: int,
+        section_key: str,
+        updated_at: str,
+        stats: dict,
+    ) -> None:
+        col, row, label, fill_hex, text_hex = SECTIONS[section_key]
+        x, y = self._section_xy(section_key)
+        entity_type = "miro_section_header"
+        entity_id = _SECTION_ENTITY_IDS[f"{section_key}_header"]
+        mp = await self._get_mapping(session, user_id, entity_type, entity_id)
+        content = f"  {label}    обновлено: {updated_at}"
+        new_id, op = await self._create_or_update_shape(
+            mp.item_id, content, x, y, SHAPE_W, SHAPE_H, fill_hex, text_hex,
+            entity_type, entity_id, stats,
+        )
+        await self._save_mapping(mp, new_id or mp.item_id, x, y)
+        stats["sections"] += 1
+
+    # ── Board header ──────────────────────────────────────────────────────────
+
+    async def _render_board_header(self, session, user_id: int, now: datetime, stats: dict) -> None:
+        x, y = self._board_header_xy()
+        entity_type = "miro_board_header"
+        entity_id = _SECTION_ENTITY_IDS["board_header"]
+        mp = await self._get_mapping(session, user_id, entity_type, entity_id)
+        content = f"  813ASSISTANT / AI-ШТАБ    {now.strftime('%Y-%m-%d %H:%M')}"
+        new_id, op = await self._create_or_update_shape(
+            mp.item_id, content, x, y, BOARD_HEADER_W, 130,
+            "#1a1a1a", "#ffffff", entity_type, entity_id, stats,
+        )
+        await self._save_mapping(mp, new_id or mp.item_id, x, y)
+
+    # ── Section: TODAY ────────────────────────────────────────────────────────
+
+    async def _render_today_section(self, session, user_id: int, time_service, stats: dict) -> None:
         now = time_service.now()
+        t_str = now.strftime("%H:%M")
+        await self._render_section_header(session, user_id, "today", t_str, stats)
+
         tasks = await get_active_tasks(session, user_id)
         reminders = await get_active_reminders(session, user_id)
         blocks = await get_active_problem_blocks(session, user_id, now)
         overrides = await get_upcoming_overrides(session, user_id, now.date())
         state = await get_or_create_runtime_state(session, user_id)
-        mode = "отдых" if any(str(o.date) == str(now.date()) and o.mode == "rest_day" for o in overrides) else "обычный"
+
+        mode = "обычный"
+        if any(str(o.date) == str(now.date()) and o.mode == "rest_day" for o in overrides):
+            mode = "отдых"
         if state.quiet_until and state.quiet_until > now:
-            mode = "тихий режим"
+            mode = "тихий"
+
         risks = []
         if any(t.deadline and t.deadline < now for t in tasks):
             risks.append("просрочка")
-        if not state.checkin_enabled:
-            risks.append("check-ins off")
-        text = (
-            f"[ШТАБ]\nДата: {now.date()}\nРежим: {mode}\n"
-            f"Фокус: {tasks[0].title if tasks else 'нет'}\n"
-            f"Задачи: {len(tasks)}\nНапоминания: {len(reminders)}\n"
-            f"Блоки: {len(blocks)}\nРиски: {', '.join(risks) if risks else 'нет'}"
+        if mode == "тихий":
+            risks.append("тихий режим")
+
+        focus = tasks[0].title if tasks else "не задан"
+        content = (
+            f"ШТАБ\n{now.strftime('%Y-%m-%d')}\n\n"
+            f"режим: {mode}\nфокус: {focus}\n\n"
+            f"задачи: {len(tasks)}\n"
+            f"напоминания: {len(reminders)}\n"
+            f"блоки: {len(blocks)}\n"
+            f"риски: {', '.join(risks) if risks else 'нет'}"
         )
-        mp = await get_or_create_miro_mapping(session, user_id, "today_summary", 0, self.board_id)
-        item_id, op = await self.create_or_update_item(
-            mp.item_id, text,
-            frames["today_summary"]["x"] + 200, frames["today_summary"]["y"] + 450,
-            "light_yellow", entity_type="today_summary", entity_id=0,
+        x, y = self._card_xy("today", 0)
+        mp = await self._get_mapping(session, user_id, "miro_today_card", _SECTION_ENTITY_IDS["today_card"])
+        new_id, _ = await self._create_or_update_sticky(
+            mp.item_id, content, x, y, "violet", "miro_today_card",
+            _SECTION_ENTITY_IDS["today_card"], stats,
         )
-        if item_id:
-            if op == "created":
-                stats["created"] += 1
-                mp.item_id = item_id
-            elif op == "updated":
-                stats["updated"] += 1
-        else:
-            stats["errors"] += 1
+        await self._save_mapping(mp, new_id or mp.item_id, x, y)
+        stats["cards"] += 1
 
-    # ── Tasks ─────────────────────────────────────────────────────────────────
+    # ── Section: NEXT STEP ────────────────────────────────────────────────────
 
-    async def sync_tasks(self, user_id, session, time_service, frames, stats) -> int:
-        tasks = await get_active_tasks(session, user_id)
-        total = len(tasks)
-        for i, task in enumerate(tasks[:15]):
-            color = "red" if task.priority in {"urgent", "high"} else ("yellow" if task.priority == "medium" else "light_gray")
-            dl = task.deadline.isoformat() if task.deadline else "-"
-            content = f"[ЗАДАЧА]\n{task.title}\nПриоритет: {task.priority}\nДедлайн: {dl}"
-            item_id, op = await self.create_or_update_item(
-                task.miro_item_id, content,
-                frames["tasks"]["x"] + 250, frames["tasks"]["y"] + 380 + i * 240,
-                color, entity_type="task", entity_id=task.id,
-            )
-            if item_id:
-                if op == "created":
-                    stats["created"] += 1
-                    task.miro_item_id = item_id
-                elif op == "updated":
-                    stats["updated"] += 1
-            else:
-                stats["errors"] += 1
-        if total > 15:
-            await self.create_or_update_item(
-                "", f"+ ещё {total - 15} задач в базе",
-                frames["tasks"]["x"] + 250, frames["tasks"]["y"] + 380 + 15 * 240,
-                "light_gray", entity_type="task_overflow", entity_id=0,
-            )
-        return min(total, 15)
-
-    # ── Reminders ─────────────────────────────────────────────────────────────
-
-    async def sync_reminders(self, user_id, session, time_service, frames, stats) -> int:
-        reminders = sorted(await get_active_reminders(session, user_id), key=lambda r: r.remind_at)[:10]
+    async def _render_next_section(self, session, user_id: int, time_service, next_step_service, stats: dict) -> None:
         now = time_service.now()
-        for i, r in enumerate(reminders):
+        t_str = now.strftime("%H:%M")
+        await self._render_section_header(session, user_id, "next", t_str, stats)
+
+        payload = await next_step_service.build_next_step(user_id, session, now)
+        actions = payload.get("actions", [])[:3]
+        mode = payload.get("mode", "normal")
+
+        if not actions:
+            body = "нет активных действий"
+        else:
+            body = "\n".join(f"{i+1}. {a}" for i, a in enumerate(actions))
+
+        content = f"СЛЕДУЮЩИЙ ШАГ\n\nрежим: {mode}\n\n{body}"
+        x, y = self._card_xy("next", 0)
+        mp = await self._get_mapping(session, user_id, "miro_next_card", _SECTION_ENTITY_IDS["next_card"])
+        new_id, _ = await self._create_or_update_sticky(
+            mp.item_id, content, x, y, "light_blue", "miro_next_card",
+            _SECTION_ENTITY_IDS["next_card"], stats,
+        )
+        await self._save_mapping(mp, new_id or mp.item_id, x, y)
+        stats["cards"] += 1
+
+    # ── Section: RISKS ────────────────────────────────────────────────────────
+
+    async def _render_risks_section(self, session, user_id: int, time_service, stats: dict) -> None:
+        now = time_service.now()
+        t_str = now.strftime("%H:%M")
+        await self._render_section_header(session, user_id, "risks", t_str, stats)
+
+        tasks = await get_active_tasks(session, user_id)
+        state = await get_or_create_runtime_state(session, user_id)
+        overrides = await get_upcoming_overrides(session, user_id, now.date())
+
+        risks = []
+        overdue = [t for t in tasks if t.deadline and t.deadline < now]
+        if overdue:
+            risks.append(f"просрочка: {len(overdue)} задач")
+            for t in overdue[:3]:
+                risks.append(f"  — {t.title[:50]}")
+        if state.quiet_until and state.quiet_until > now:
+            risks.append(f"тихий режим до {state.quiet_until.strftime('%H:%M')}")
+        if not state.checkin_enabled:
+            risks.append("check-ins отключены")
+        if any(str(o.date) == str(now.date()) and o.mode == "rest_day" for o in overrides):
+            risks.append("день отдыха: не перегружать")
+
+        content = "РИСКИ\n\n" + ("\n".join(risks) if risks else "рисков нет")
+        x, y = self._card_xy("risks", 0)
+        mp = await self._get_mapping(session, user_id, "miro_risks_card", _SECTION_ENTITY_IDS["risks_card"])
+        color = "red" if risks else "light_green"
+        new_id, _ = await self._create_or_update_sticky(
+            mp.item_id, content, x, y, color, "miro_risks_card",
+            _SECTION_ENTITY_IDS["risks_card"], stats,
+        )
+        await self._save_mapping(mp, new_id or mp.item_id, x, y)
+        stats["cards"] += 1
+
+    # ── Section: TASKS ────────────────────────────────────────────────────────
+
+    async def _render_tasks_section(self, session, user_id: int, time_service, stats: dict) -> None:
+        now = time_service.now()
+        await self._render_section_header(session, user_id, "tasks", now.strftime("%H:%M"), stats)
+
+        tasks = sorted(
+            await get_active_tasks(session, user_id),
+            key=lambda t: (0 if t.priority in {"urgent", "high"} else 1 if t.priority == "medium" else 2)
+        )
+
+        if not tasks:
+            x, y = self._card_xy("tasks", 0)
+            mp = await self._get_mapping(session, user_id, "miro_tasks_empty", _SECTION_ENTITY_IDS["tasks_header"] + 50)
+            new_id, _ = await self._create_or_update_sticky(
+                mp.item_id, "нет активных задач", x, y, "light_gray",
+                "miro_tasks_empty", _SECTION_ENTITY_IDS["tasks_header"] + 50, stats,
+            )
+            await self._save_mapping(mp, new_id or mp.item_id, x, y)
+            stats["cards"] += 1
+            return
+
+        display = tasks[:MAX_TASKS]
+        for i, task in enumerate(display):
+            color = "red" if task.priority in {"urgent", "high"} else ("yellow" if task.priority == "medium" else "light_gray")
+            dl = task.deadline.strftime("%Y-%m-%d") if task.deadline else "без дедлайна"
+            content = f"ЗАДАЧА\n{task.title}\n\npriority: {task.priority}\ndeadline: {dl}"
+            if task.deadline and task.deadline < now:
+                content += "\n⚠ ПРОСРОЧЕНО"
+            x, y = self._card_xy("tasks", i)
+            mp = await self._get_mapping(session, user_id, "task", task.id)
+            new_id, _ = await self._create_or_update_sticky(
+                mp.item_id, content, x, y, color, "task", task.id, stats,
+            )
+            await self._save_mapping(mp, new_id or mp.item_id, x, y)
+            stats["cards"] += 1
+
+        extra = len(tasks) - MAX_TASKS
+        if extra > 0:
+            x, y = self._card_xy("tasks", MAX_TASKS)
+            mp = await self._get_mapping(session, user_id, "miro_tasks_overflow", _SECTION_ENTITY_IDS["tasks_header"] + 99)
+            new_id, _ = await self._create_or_update_sticky(
+                mp.item_id, f"+ ещё {extra} задач в базе", x, y, "light_gray",
+                "miro_tasks_overflow", _SECTION_ENTITY_IDS["tasks_header"] + 99, stats,
+            )
+            await self._save_mapping(mp, new_id or mp.item_id, x, y)
+            stats["cards"] += 1
+
+    # ── Section: REMINDERS ────────────────────────────────────────────────────
+
+    async def _render_reminders_section(self, session, user_id: int, time_service, stats: dict) -> None:
+        now = time_service.now()
+        await self._render_section_header(session, user_id, "reminders", now.strftime("%H:%M"), stats)
+
+        reminders = sorted(
+            await get_active_reminders(session, user_id),
+            key=lambda r: (0 if r.remind_at <= now else 1, r.remind_at)
+        )
+
+        if not reminders:
+            x, y = self._card_xy("reminders", 0)
+            mp = await self._get_mapping(session, user_id, "miro_rem_empty", _SECTION_ENTITY_IDS["reminders_header"] + 50)
+            new_id, _ = await self._create_or_update_sticky(
+                mp.item_id, "нет активных напоминаний", x, y, "light_gray",
+                "miro_rem_empty", _SECTION_ENTITY_IDS["reminders_header"] + 50, stats,
+            )
+            await self._save_mapping(mp, new_id or mp.item_id, x, y)
+            stats["cards"] += 1
+            return
+
+        for i, r in enumerate(reminders[:MAX_REMINDERS]):
             overdue = r.remind_at <= now
             color = "red" if overdue else "light_blue"
-            content = f"[НАПОМИНАНИЕ]\n{r.text}\nКогда: {r.remind_at.strftime('%Y-%m-%d %H:%M')}" + ("\nПросрочено" if overdue else "")
-            item_id, op = await self.create_or_update_item(
-                r.miro_item_id, content,
-                frames["reminders"]["x"] + 250, frames["reminders"]["y"] + 380 + i * 240,
-                color, entity_type="reminder", entity_id=r.id,
+            when = r.remind_at.strftime("%Y-%m-%d %H:%M")
+            content = f"НАПОМИНАНИЕ\n{r.text}\n\nкогда: {when}"
+            if overdue:
+                content += "\n⚠ просрочено"
+            x, y = self._card_xy("reminders", i)
+            mp = await self._get_mapping(session, user_id, "reminder", r.id)
+            new_id, _ = await self._create_or_update_sticky(
+                mp.item_id, content, x, y, color, "reminder", r.id, stats,
             )
-            if item_id:
-                if op == "created":
-                    stats["created"] += 1
-                    r.miro_item_id = item_id
-                elif op == "updated":
-                    stats["updated"] += 1
-            else:
-                stats["errors"] += 1
-        return len(reminders)
+            await self._save_mapping(mp, new_id or mp.item_id, x, y)
+            stats["cards"] += 1
 
-    # ── Problem blocks ────────────────────────────────────────────────────────
+    # ── Section: PROBLEMS ─────────────────────────────────────────────────────
 
-    async def sync_problem_blocks(self, user_id, session, time_service, frames, stats) -> int:
-        blocks = await get_active_problem_blocks(session, user_id, time_service.now())
-        for i, b in enumerate(blocks[:10]):
-            color = "red" if (b.priority in {"urgent", "high"} or b.pressure_level == "hard") else ("yellow" if b.priority == "medium" else "light_blue")
-            content = f"[БЛОК]\n{b.title}\nКатегория: {b.category}\nСледующий шаг: {b.next_action}\nДедлайн: {b.deadline or '-'}"
-            mp = await get_or_create_miro_mapping(session, user_id, "problem_block", b.id, self.board_id)
-            item_id, op = await self.create_or_update_item(
-                mp.item_id, content,
-                frames["problem_blocks"]["x"] + 250, frames["problem_blocks"]["y"] + 380 + i * 260,
-                color, entity_type="problem_block", entity_id=b.id,
+    async def _render_problems_section(self, session, user_id: int, time_service, stats: dict) -> None:
+        now = time_service.now()
+        await self._render_section_header(session, user_id, "problems", now.strftime("%H:%M"), stats)
+
+        blocks = await get_active_problem_blocks(session, user_id, now)
+
+        if not blocks:
+            x, y = self._card_xy("problems", 0)
+            mp = await self._get_mapping(session, user_id, "miro_prob_empty", _SECTION_ENTITY_IDS["problems_header"] + 50)
+            new_id, _ = await self._create_or_update_sticky(
+                mp.item_id, "нет открытых блоков", x, y, "light_green",
+                "miro_prob_empty", _SECTION_ENTITY_IDS["problems_header"] + 50, stats,
             )
-            if item_id:
-                if op == "created":
-                    stats["created"] += 1
-                    mp.item_id = item_id
-                elif op == "updated":
-                    stats["updated"] += 1
-            else:
-                stats["errors"] += 1
-        return min(len(blocks), 10)
+            await self._save_mapping(mp, new_id or mp.item_id, x, y)
+            stats["cards"] += 1
+            return
 
-    # ── Schedule ──────────────────────────────────────────────────────────────
+        for i, b in enumerate(blocks[:MAX_PROBLEMS]):
+            color = "red" if (b.priority in {"urgent", "high"} or b.pressure_level == "hard") else "orange"
+            next_act = (b.next_action[:60] + "...") if len(b.next_action or "") > 60 else (b.next_action or "—")
+            content = f"БЛОК\n{b.title}\n\nкатегория: {b.category}\nследующий шаг:\n{next_act}"
+            x, y = self._card_xy("problems", i)
+            mp = await self._get_mapping(session, user_id, "problem_block", b.id)
+            new_id, _ = await self._create_or_update_sticky(
+                mp.item_id, content, x, y, color, "problem_block", b.id, stats,
+            )
+            await self._save_mapping(mp, new_id or mp.item_id, x, y)
+            stats["cards"] += 1
 
-    async def sync_schedule(self, user_id, session, time_service, frames, stats):
-        overrides = await get_upcoming_overrides(session, user_id, time_service.today())
-        for i, o in enumerate(overrides[:10]):
+    # ── Section: SCHEDULE ─────────────────────────────────────────────────────
+
+    async def _render_schedule_section(self, session, user_id: int, time_service, stats: dict) -> None:
+        now = time_service.now()
+        await self._render_section_header(session, user_id, "schedule", now.strftime("%H:%M"), stats)
+
+        overrides = await get_upcoming_overrides(session, user_id, now.date())
+
+        if not overrides:
+            x, y = self._card_xy("schedule", 0)
+            mp = await self._get_mapping(session, user_id, "miro_sched_empty", _SECTION_ENTITY_IDS["schedule_header"] + 50)
+            new_id, _ = await self._create_or_update_sticky(
+                mp.item_id, "плановых исключений нет", x, y, "light_gray",
+                "miro_sched_empty", _SECTION_ENTITY_IDS["schedule_header"] + 50, stats,
+            )
+            await self._save_mapping(mp, new_id or mp.item_id, x, y)
+            stats["cards"] += 1
+            return
+
+        for i, o in enumerate(overrides[:MAX_SCHEDULE]):
             color = "light_green" if o.mode == "rest_day" else "light_blue"
-            content = f"[РАСПИСАНИЕ]\nДата: {o.date}\nРежим: {o.mode}\nОписание: {o.description or '-'}"
-            mp = await get_or_create_miro_mapping(session, user_id, "schedule_override", o.id, self.board_id)
-            item_id, op = await self.create_or_update_item(
-                mp.item_id, content,
-                frames["schedule"]["x"] + 250, frames["schedule"]["y"] + 380 + i * 240,
-                color, entity_type="schedule_override", entity_id=o.id,
+            content = f"РАСПИСАНИЕ\n{o.date}\n\nрежим: {o.mode}\n{o.description or ''}"
+            x, y = self._card_xy("schedule", i)
+            mp = await self._get_mapping(session, user_id, "schedule_override", o.id)
+            new_id, _ = await self._create_or_update_sticky(
+                mp.item_id, content, x, y, color, "schedule_override", o.id, stats,
             )
-            if item_id:
-                if op == "created":
-                    stats["created"] += 1
-                    mp.item_id = item_id
-                elif op == "updated":
-                    stats["updated"] += 1
-            else:
-                stats["errors"] += 1
+            await self._save_mapping(mp, new_id or mp.item_id, x, y)
+            stats["cards"] += 1
 
-    # ── Check-ins ─────────────────────────────────────────────────────────────
+    # ── Section: CHECK-INS ────────────────────────────────────────────────────
 
-    async def sync_checkins(self, user_id, session, time_service, cfg, frames, stats):
+    async def _render_checkins_section(self, session, user_id: int, time_service, cfg, stats: dict) -> None:
+        now = time_service.now()
+        await self._render_section_header(session, user_id, "checkins", now.strftime("%H:%M"), stats)
+
         state = await get_or_create_runtime_state(session, user_id)
-        quiet = state.quiet_until.strftime("%Y-%m-%d %H:%M") if state.quiet_until else "нет"
-        text = (
-            "[CHECK-INS]\n"
-            f"Статус: {'enabled' if state.checkin_enabled else 'disabled'}\n"
-            f"Тихий режим: {quiet}\n"
-            f"Утро: {cfg.checkin_morning_time} / День: {cfg.checkin_day_time} / Вечер: {cfg.checkin_evening_time}"
-        )
-        color = "light_gray" if not state.checkin_enabled else (
-            "light_yellow" if state.quiet_until and state.quiet_until > time_service.now() else "light_green"
-        )
-        mp = await get_or_create_miro_mapping(session, user_id, "checkin_summary", 0, self.board_id)
-        item_id, op = await self.create_or_update_item(
-            mp.item_id, text,
-            frames["checkin_summary"]["x"] + 250, frames["checkin_summary"]["y"] + 380,
-            color, entity_type="checkin_summary", entity_id=0,
-        )
-        if item_id:
-            if op == "created":
-                stats["created"] += 1
-                mp.item_id = item_id
-            elif op == "updated":
-                stats["updated"] += 1
-        else:
-            stats["errors"] += 1
+        quiet = state.quiet_until.strftime("%H:%M") if state.quiet_until and state.quiet_until > now else "нет"
+        last = state.last_checkin_at.strftime("%Y-%m-%d %H:%M") if state.last_checkin_at else "—"
 
-    # ── Archive ───────────────────────────────────────────────────────────────
+        status = "включены" if state.checkin_enabled else "выключены"
+        color = "light_green" if state.checkin_enabled else "light_gray"
 
-    async def sync_archive(self, user_id, session, time_service, frames, stats) -> int:
+        content = (
+            f"CHECK-INS\n\nстатус: {status}\n"
+            f"утро: {cfg.checkin_morning_time}\n"
+            f"день: {cfg.checkin_day_time}\n"
+            f"вечер: {cfg.checkin_evening_time}\n\n"
+            f"тихий режим: {quiet}\n"
+            f"последний: {last}"
+        )
+        x, y = self._card_xy("checkins", 0)
+        mp = await self._get_mapping(session, user_id, "miro_checkins_card", _SECTION_ENTITY_IDS["checkins_card"])
+        new_id, _ = await self._create_or_update_sticky(
+            mp.item_id, content, x, y, color, "miro_checkins_card",
+            _SECTION_ENTITY_IDS["checkins_card"], stats,
+        )
+        await self._save_mapping(mp, new_id or mp.item_id, x, y)
+        stats["cards"] += 1
+
+    # ── Section: ARCHIVE ──────────────────────────────────────────────────────
+
+    async def _render_archive_section(self, session, user_id: int, time_service, stats: dict) -> None:
+        now = time_service.now()
+        await self._render_section_header(session, user_id, "archive", now.strftime("%H:%M"), stats)
+
         archived_tasks = await get_archived_tasks(session, user_id)
-        n = 0
-        for i, t in enumerate(archived_tasks[:20]):
-            content = f"[АРХИВ]\nТип: task\n{t.title}\nПричина: {t.cleanup_reason or '-'}"
-            item_id, op = await self.create_or_update_item(
-                t.miro_item_id, content,
-                frames["archive"]["x"] + 250, frames["archive"]["y"] + 380 + i * 220,
-                "light_gray", entity_type="archived_task", entity_id=t.id,
+        archived_blocks = await get_archived_problem_blocks(session, user_id)
+        done_rem = await get_done_reminders_count(session, user_id)
+
+        # Summary card
+        content = (
+            f"АРХИВ\n\n"
+            f"задачи: {len(archived_tasks)}\n"
+            f"напоминания (завершено): {done_rem}\n"
+            f"блоки: {len(archived_blocks)}"
+        )
+        x, y = self._card_xy("archive", 0)
+        mp = await self._get_mapping(session, user_id, "miro_archive_card", _SECTION_ENTITY_IDS["archive_card"])
+        new_id, _ = await self._create_or_update_sticky(
+            mp.item_id, content, x, y, "light_gray", "miro_archive_card",
+            _SECTION_ENTITY_IDS["archive_card"], stats,
+        )
+        await self._save_mapping(mp, new_id or mp.item_id, x, y)
+        stats["cards"] += 1
+
+        # Recent archived tasks (up to 5)
+        for i, t in enumerate(archived_tasks[:5]):
+            x, y = self._card_xy("archive", i + 1)
+            mp = await self._get_mapping(session, user_id, "archived_task", t.id)
+            content = f"ЗАКРЫТО\n{t.title}\n\npричина: {t.cleanup_reason or '—'}"
+            new_id, _ = await self._create_or_update_sticky(
+                mp.item_id, content, x, y, "light_gray", "archived_task", t.id, stats,
             )
-            if item_id:
-                if op == "created":
-                    stats["created"] += 1
-                    t.miro_item_id = item_id
-                elif op == "updated":
-                    stats["updated"] += 1
-            else:
-                stats["errors"] += 1
-            n += 1
-        return n
+            await self._save_mapping(mp, new_id or mp.item_id, x, y)
+            stats["cards"] += 1
 
-    # ── Core: create_or_update_item ───────────────────────────────────────────
+    # ── Section: FUTURE (placeholders) ───────────────────────────────────────
 
-    async def create_or_update_item(
-        self,
-        item_id: str,
-        content: str,
-        x: int,
-        y: int,
-        color: str,
-        entity_type: str = "unknown",
-        entity_id: int = 0,
-    ) -> tuple[str | None, str]:
-        """
-        Create or update a sticky note on the Miro board.
+    async def _render_future_sections(self, session, user_id: int, time_service, stats: dict) -> None:
+        now = time_service.now()
+        t_str = now.strftime("%H:%M")
 
-        Returns:
-            (item_id, operation) where operation is "created", "updated", or "error".
-            Returns (None, "error") on failure — never raises.
-        """
-        x, y = _safe_position(x, y, self.start_x)
-        content = _safe_content(content)
-        fill_color = _safe_color(color)
+        tasks = await get_active_tasks(session, user_id)
+        blocks = await get_active_problem_blocks(session, user_id, now)
 
-        # Minimal validated payload — no extra style fields
-        payload = {
-            "data": {"content": content},
-            "position": {"x": x, "y": y},
-            "style": {"fillColor": fill_color},
+        money_tasks = sum(1 for t in tasks if any(kw in t.title.lower() for kw in ["оплата", "деньги", "платёж"]))
+        orders_tasks = sum(1 for t in tasks if any(kw in t.title.lower() for kw in ["заказ", "клиент", "доставка"]))
+        study_tasks = sum(1 for t in tasks if any(kw in t.title.lower() for kw in ["учёба", "экзамен", "егэ", "ошибка"]))
+        body_tasks = sum(1 for t in tasks if any(kw in t.title.lower() for kw in ["сон", "тело", "боль", "перегруз"]))
+
+        future_map = {
+            "money":     (money_tasks,  "ДЕНЬГИ",     "платежи и расчёты"),
+            "orders":    (orders_tasks, "ЗАКАЗЫ",     "клиенты и доставки"),
+            "study":     (study_tasks,  "УЧЁБА",      "подготовка и ошибки"),
+            "body":      (body_tasks,   "ТЕЛО",       "сон и восстановление"),
+            "protocols": (0,            "ПРОТОКОЛЫ",  "сценарии поведения"),
         }
 
-        headers = self._headers()
-        base_url = f"https://api.miro.com/v2/boards/{self.board_id}/sticky_notes"
-
-        async with httpx.AsyncClient(timeout=20.0) as client:
-
-            # ── Try PATCH (update) first ───────────────────────────────────
-            if item_id:
-                try:
-                    r = await client.patch(f"{base_url}/{item_id}", headers=headers, json=payload)
-                    if r.status_code < 400:
-                        return item_id, "updated"
-                    # PATCH failed (item deleted from board?) — fall through to POST
-                    logger.warning(
-                        "Miro PATCH %s → %d (entity=%s id=%s). Will retry as POST. body=%s",
-                        item_id, r.status_code, entity_type, entity_id,
-                        r.text[:200],
-                    )
-                except httpx.RequestError as exc:
-                    logger.warning("Miro PATCH network error (entity=%s id=%s): %s", entity_type, entity_id, exc)
-
-            # ── POST (create) ──────────────────────────────────────────────
-            try:
-                r = await client.post(base_url, headers=headers, json=payload)
-            except httpx.RequestError as exc:
-                logger.error("Miro POST network error (entity=%s id=%s): %s", entity_type, entity_id, exc)
-                return None, "error"
-
-            if r.status_code == 201:
-                new_id = r.json().get("id", "")
-                logger.debug("Miro POST 201 (entity=%s id=%s) → item_id=%s", entity_type, entity_id, new_id)
-                return new_id, "created"
-
-            # ── Log full error without exposing the token ──────────────────
-            content_preview = content[:100].replace("\n", " ")
-            logger.error(
-                "Miro POST failed: status=%d entity=%s entity_id=%s x=%d y=%d color=%s "
-                "content_preview=%r body=%s",
-                r.status_code, entity_type, entity_id, x, y, fill_color,
-                content_preview, r.text[:500],
+        for key, (n_tasks, label, focus) in future_map.items():
+            await self._render_section_header(session, user_id, key, t_str, stats)
+            x, y = self._card_xy(key, 0)
+            mp = await self._get_mapping(
+                session, user_id,
+                f"miro_{key}_card",
+                _SECTION_ENTITY_IDS[f"{key}_card"],
             )
-            return None, "error"
+            content = f"{label}\n\nфокус: {focus}\nактивных задач: {n_tasks}\nактивных блоков: {len(blocks)}"
+            new_id, _ = await self._create_or_update_sticky(
+                mp.item_id, content, x, y, "light_gray",
+                f"miro_{key}_card", _SECTION_ENTITY_IDS[f"{key}_card"], stats,
+            )
+            await self._save_mapping(mp, new_id or mp.item_id, x, y)
+            stats["cards"] += 1
 
-    # ── Debug: test single sticky note ───────────────────────────────────────
+    # ── Public: sync_all ──────────────────────────────────────────────────────
+
+    async def sync_all(self, user_id: int, session, time_service, cfg, next_step_service=None) -> dict:
+        stats = {"sections": 0, "cards": 0, "created": 0, "updated": 0, "errors": 0}
+        now = time_service.now()
+
+        await self._render_board_header(session, user_id, now, stats)
+        await self._render_today_section(session, user_id, time_service, stats)
+        await self._render_next_section(session, user_id, time_service, next_step_service, stats)
+        await self._render_risks_section(session, user_id, time_service, stats)
+        await self._render_tasks_section(session, user_id, time_service, stats)
+        await self._render_reminders_section(session, user_id, time_service, stats)
+        await self._render_problems_section(session, user_id, time_service, stats)
+        await self._render_schedule_section(session, user_id, time_service, stats)
+        await self._render_checkins_section(session, user_id, time_service, cfg, stats)
+        await self._render_archive_section(session, user_id, time_service, stats)
+        await self._render_future_sections(session, user_id, time_service, stats)
+
+        return stats
+
+    # ── Debug helpers ─────────────────────────────────────────────────────────
+
+    async def debug_get_items(self) -> dict:
+        """GET /v2/boards/{id}/items?limit=10 for connectivity check (Miro min page size = 10)."""
+        url = f"https://api.miro.com/v2/boards/{self.board_id}/items?limit=10"
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                r = await client.get(url, headers=self._headers())
+            return {"status_code": r.status_code, "error": r.text[:200] if r.status_code >= 400 else None}
+        except Exception as exc:
+            return {"status_code": None, "error": str(exc)[:200]}
 
     async def debug_create_test_note(self) -> dict:
-        """
-        Create one test sticky note and return detailed result.
-        Used by /miro_debug command. Never raises.
-        """
-        x, y = self.start_x, self.start_y
+        """Create one test sticky note (only invoked by /miro_debug). Never invoked by sync_all."""
+        x, y = self.start_x, self.start_y - 800  # above board header, out of the way
         payload = {
-            "data": {"content": "813Assistant debug"},
+            "data": {"content": "813Assistant debug\n/miro_debug"},
             "position": {"x": x, "y": y},
             "style": {"fillColor": "light_green"},
         }
-        headers = self._headers()
         url = f"https://api.miro.com/v2/boards/{self.board_id}/sticky_notes"
         try:
             async with httpx.AsyncClient(timeout=15.0) as client:
-                r = await client.post(url, headers=headers, json=payload)
+                r = await client.post(url, headers=self._headers(), json=payload)
             return {
                 "status_code": r.status_code,
                 "item_id": r.json().get("id") if r.status_code == 201 else None,
@@ -434,14 +736,3 @@ class MiroService:
             }
         except Exception as exc:
             return {"status_code": None, "item_id": None, "error": str(exc)[:200]}
-
-    async def debug_get_items(self) -> dict:
-        """GET /v2/boards/{id}/items?limit=10 for connectivity check (Miro minimum page size is 10)."""
-        headers = self._headers()
-        url = f"https://api.miro.com/v2/boards/{self.board_id}/items?limit=10"
-        try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                r = await client.get(url, headers=headers)
-            return {"status_code": r.status_code, "error": r.text[:200] if r.status_code >= 400 else None}
-        except Exception as exc:
-            return {"status_code": None, "error": str(exc)[:200]}
