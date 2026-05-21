@@ -350,14 +350,19 @@ async def do_sync_miro(callback: CallbackQuery, session_factory, miro_service, t
         async with session_factory() as session:
             stats = await miro_service.sync_all(callback.from_user.id, session, time_service, config)
             await session.commit()
+        errors = stats.get("errors", 0)
+        status = "Синхронизация завершена." if errors == 0 else f"Синхронизация завершена частично.\nОшибки: {errors} — /miro_debug"
         text = (
-            "MIRO\n\nСинхронизация завершена.\n\n"
-            f"Задачи: {stats['tasks']}\nНапоминания: {stats['reminders']}\n"
-            f"Проблемы: {stats['problems']}\nАрхив: {stats['archive']}"
+            f"MIRO\n\n{status}\n\n"
+            f"Создано: {stats.get('created', 0)}\n"
+            f"Обновлено: {stats.get('updated', 0)}\n"
+            f"Задачи: {stats.get('tasks', 0)} | Напоминания: {stats.get('reminders', 0)}\n"
+            f"Проблемы: {stats.get('problems', 0)} | Архив: {stats.get('archive', 0)}"
         )
     except Exception:
-        text = "MIRO\n\nОшибка синхронизации. Проверь логи."
+        text = "MIRO\n\nОшибка синхронизации. Проверь логи.\n/miro_debug — диагностика."
     await callback.message.edit_text(text, reply_markup=_miro_kb(miro_service.is_configured()))
+
 
 
 @router.callback_query(F.data == "settings_health")

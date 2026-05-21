@@ -498,15 +498,30 @@ async def sync_miro(message: Message, session_factory, miro_service, time_servic
         async with session_factory() as session:
             stats = await miro_service.sync_all(message.from_user.id, session, time_service, config)
             await session.commit()
+        errors = stats.get("errors", 0)
+        if errors > 0:
+            result_header = "Miro обновлён частично."
+            result_footer = f"\nЧасть элементов не создана: {errors}. Ошибка записана в лог.\nДиагностика: /miro_debug"
+        else:
+            result_header = "Miro обновлён."
+            result_footer = "\nСледующий шаг: проверить Штаб в Miro."
         await message.answer(
-            "Miro обновлён.\n\n"
-            f"Задачи: {stats['tasks']}\nНапоминания: {stats['reminders']}\n"
-            f"Проблемы: {stats['problems']}\nАрхив: {stats['archive']}\n\n"
-            "Следующий шаг: проверить Штаб в Miro."
+            f"{result_header}\n\n"
+            f"Создано: {stats.get('created', 0)}\n"
+            f"Обновлено: {stats.get('updated', 0)}\n"
+            f"Ошибки: {errors}\n\n"
+            f"Задачи: {stats.get('tasks', 0)} | "
+            f"Напоминания: {stats.get('reminders', 0)} | "
+            f"Проблемы: {stats.get('problems', 0)} | "
+            f"Архив: {stats.get('archive', 0)}"
+            f"{result_footer}"
         )
     except Exception:
-        await message.answer("Miro не обновлён. Ошибка записана в лог.")
+        import logging
+        logging.getLogger(__name__).exception("sync_miro unexpected error")
+        await message.answer("Miro: критическая ошибка синхронизации. Проверь логи.\n/miro_debug — диагностика.")
     await screen_service.delete_user_input(message)
+
 
 
 # ── Overload callbacks ─────────────────────────────────────────────────────────

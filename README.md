@@ -326,3 +326,32 @@ bash scripts_check_no_conflicts.sh
 python -m compileall .
 python -c "import ast, os; [ast.parse(open(os.path.join(r,f)).read()) for r,_,fs in os.walk('bot') for f in fs if f.endswith('.py')]; print('AST OK')"
 ```
+
+---
+
+## Miro: диагностика
+
+### /miro_debug
+
+Показывает статус Miro без токена. GET /v2/boards/{id}/items?limit=1. Создаёт тестовый sticky note.
+
+### /sync_miro
+
+Если часть элементов не создалась: 'Miro обновлён частично. Создано: N, Ошибки: N'.
+Каждая ошибка логируется с status_code, entity_type, content_preview.
+Один упавший item не прерывает sync остальных.
+
+### Логи на сервере
+
+    journalctl -u 813assistant -n 120 --no-pager
+
+Ищи: Miro POST failed: status=400 entity=task entity_id=5
+
+### Причины 400 Bad Request
+
+- Невалидный fillColor ('gray') -> исправлено на 'light_gray'
+- Пустой content -> заменяется на 'Без названия'
+- Длинный content -> обрезается до 1500 символов
+- x/y = None -> автоприведение к int
+- Mapping до 201 -> mp.item_id сохраняется только при успешном create
+

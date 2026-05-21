@@ -137,3 +137,61 @@ async def debug_create_test_data(message: Message, session_factory, time_service
         "Через ~1 мин придёт тестовое напоминание."
     )
     await screen_service.delete_user_input(message)
+
+
+@router.message(Command("miro_debug"))
+async def miro_debug_cmd(message: Message, miro_service, config, screen_service):
+    """
+    Miro connectivity diagnostic.
+    Safe: never shows MIRO_ACCESS_TOKEN or BOT_TOKEN.
+    Only accessible to ALLOWED_USER_ID via AccessMiddleware.
+    """
+    if not miro_service.is_configured():
+        await message.answer(
+            "MIRO DEBUG\n\n"
+            "Статус: не настроен.\n\n"
+            "Нужны переменные окружения:\n"
+            "  MIRO_ACCESS_TOKEN\n"
+            "  MIRO_BOARD_ID"
+        )
+        await screen_service.delete_user_input(message)
+        return
+
+    board_display = config.miro_board_id[:8] + "..." if config.miro_board_id else "—"
+    lines = [
+        "MIRO DEBUG",
+        "",
+        f"Board: {board_display}",
+        f"AI-зона: X={config.miro_ai_zone_start_x}, Y={config.miro_ai_zone_start_y}",
+        "",
+    ]
+
+    # GET /v2/boards/{id}/items?limit=1
+    get_result = await miro_service.debug_get_items()
+    get_status = get_result["status_code"]
+    if get_status == 200:
+        lines.append(f"GET items: {get_status} OK")
+    elif get_status is None:
+        lines.append(f"GET items: сетевая ошибка — {get_result['error']}")
+    else:
+        lines.append(f"GET items: {get_status} FAIL — {get_result['error']}")
+
+    # POST — create test sticky note
+    create_result = await miro_service.debug_create_test_note()
+    create_status = create_result["status_code"]
+    if create_status == 201:
+        lines += [f"CREATE test note: {create_status} OK", f"item_id: {create_result['item_id']}"]
+    elif create_status is None:
+        lines.append(f"CREATE test note: сетевая ошибка — {create_result['error']}")
+    else:
+        lines += [
+            f"CREATE test note: {create_status} FAIL",
+            f"Error: {create_result['error']}",
+        ]
+
+    lines += [
+        "",
+        "Логи: journalctl -u 813assistant -n 120 --no-pager",
+    ]
+    await message.answer("\n".join(lines))
+    await screen_service.delete_user_input(message)
