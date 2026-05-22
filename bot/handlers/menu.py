@@ -607,15 +607,27 @@ async def section_orders(message, session_factory, time_service, screen_service,
 
 
 @router.message(F.text == "Учёба")
+@router.message(Command("study"))
 async def section_study(message, session_factory, time_service, screen_service, bot):
     now = time_service.now()
     today = now.date()
-    async with session_factory() as session:
-        exams = await get_active_exam_dates(session, message.from_user.id)
-        schedule = await get_active_study_schedule(session, message.from_user.id)
-        study_blocks = await get_problem_blocks_by_categories(
-            session, message.from_user.id, ["exam", "study", "learning", "education"], now
-        )
+    exams, schedule, study_blocks = [], [], []
+    try:
+        async with session_factory() as session:
+            exams = await get_active_exam_dates(session, message.from_user.id)
+            schedule = await get_active_study_schedule(session, message.from_user.id)
+            study_blocks = await get_problem_blocks_by_categories(
+                session, message.from_user.id, ["exam", "study", "learning", "education"], now
+            )
+    except Exception as exc:
+        import logging as _sl; _sl.getLogger(__name__).exception(
+            "/study DB error user_id=%s", message.from_user.id)
+        await message.answer("Учёба временно не открылась. Ошибка записана в лог.")
+        await screen_service.delete_user_input(message)
+        return
+    import logging as _sl2
+    _sl2.getLogger(__name__).info("/study user_id=%s exams=%d schedule=%d blocks=%d",
+        message.from_user.id, len(exams), len(schedule), len(study_blocks))
 
     lines = ["УЧЁБА", ""]
 
@@ -630,12 +642,13 @@ async def section_study(message, session_factory, time_service, screen_service, 
         lines += ["Экзамены:", "— ещё не зафиксированы.", ""]
 
     if schedule:
-        _WDAY = {"mon": "пн", "tue": "вт", "wed": "ср", "thu": "чт", "fri": "пт", "sat": "сб", "sun": "вс"}
+        _WD = {"mon": "понедельник", "tue": "вторник", "wed": "среда",
+               "thu": "четверг", "fri": "пятница", "sat": "суббота", "sun": "воскресенье"}
         lines.append("Занятия:")
         for i, s in enumerate(schedule, 1):
-            wd = _WDAY.get(s.weekday or "", s.weekday or "")
+            wd = _WD.get(s.weekday or "", s.weekday or "")
             t = s.time_str or ""
-            tutor = f" ({s.tutor_name})" if s.tutor_name else ""
+            tutor = f", {s.tutor_name}" if s.tutor_name else ""
             lines.append(f"{i}. {s.subject} — {wd}, {t}{tutor}")
         lines.append("")
     else:
@@ -643,7 +656,7 @@ async def section_study(message, session_factory, time_service, screen_service, 
 
     if study_blocks:
         lines.append("Активные блоки:")
-        for i, b in enumerate(study_blocks, 1):
+        for i, b in enumerate(study_blocks[:3], 1):
             lines.append(f"{i}. {b.title}")
             if b.next_action:
                 lines.append(f"   Следующий шаг: {b.next_action[:80]}")
@@ -663,14 +676,19 @@ async def section_study(message, session_factory, time_service, screen_service, 
         lines += ["Быстрый ввод:", '"проблема с 24 заданием по обществу"', '"ЕГЭ по русскому 3 июня"']
 
     kb = _study_kb(bool(study_blocks))
-    async with session_factory() as session:
-        await screen_service.render_screen(
-            bot=bot, session=session,
-            user_id=message.from_user.id,
-            chat_id=message.chat.id,
-            text="\n".join(lines), reply_markup=kb,
-        )
-        await session.commit()
+    try:
+        async with session_factory() as session:
+            await screen_service.render_screen(
+                bot=bot, session=session,
+                user_id=message.from_user.id,
+                chat_id=message.chat.id,
+                text="\n".join(lines), reply_markup=kb,
+            )
+            await session.commit()
+    except Exception as exc:
+        import logging as _sl3; _sl3.getLogger(__name__).exception(
+            "/study render error user_id=%s", message.from_user.id)
+        await message.answer("\n".join(lines))
     await screen_service.delete_user_input(message)
 
 

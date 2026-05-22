@@ -195,6 +195,9 @@ async def miro_debug_cmd(message: Message, miro_service, config, screen_service)
 
     lines += [
         "",
+        "/miro_debug только проверяет API-соединение.",
+        "Для отрисовки штаба используй /sync_miro.",
+        "",
         "Логи: journalctl -u 813assistant -n 120 --no-pager",
     ]
     await message.answer("\n".join(lines))
