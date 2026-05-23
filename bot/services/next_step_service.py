@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import timedelta
 
 from bot.database.queries import get_active_reminders, get_active_tasks, get_overdue_tasks, get_upcoming_overrides
+from bot.services.datetime_utils import ensure_aware
 
 
 class NextStepService:
@@ -49,7 +50,8 @@ class NextStepService:
                 score += 50
             elif t.priority == "medium":
                 score += 20
-            if t.deadline and t.deadline < now:
+            dl = ensure_aware(t.deadline, now.tzinfo) if t.deadline else None
+            if dl and dl < now:
                 score += 30
             lowtxt = f"{t.title} {t.description}".lower()
             if any(w in lowtxt for w in self.MONEY_WORDS):
@@ -84,7 +86,14 @@ class NextStepService:
             actions.append(f"Закрыть просроченное: {urgent_overdue.title}.")
             related.append({"type": "task", "id": urgent_overdue.id})
 
-        near = [r for r in reminders if now <= r.remind_at <= now + timedelta(hours=2)]
+        tz = now.tzinfo
+        near = []
+        for r in reminders:
+            if not r.remind_at:
+                continue
+            remind_at = ensure_aware(r.remind_at, tz)
+            if remind_at and now <= remind_at <= now + timedelta(hours=2):
+                near.append(r)
         if near:
             actions.append(f"Подготовить напоминание: {near[0].text}.")
             related.append({"type": "reminder", "id": near[0].id})

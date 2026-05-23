@@ -133,7 +133,7 @@ def find_best_exam_match(exams: list, raw_subject: str) -> "ExamDate | None":
         if canonical_key(normalize_subject(exam.subject)) == target_key:
             return exam
 
-    # 3. Special: "Математика" (generic) → find any math exam
+    # 3. Special: "Математика" (generic) → find any math exam if only one exists
     if target_canon == "Математика":
         math_exams = [
             e for e in exams
@@ -141,9 +141,17 @@ def find_best_exam_match(exams: list, raw_subject: str) -> "ExamDate | None":
         ]
         if len(math_exams) == 1:
             return math_exams[0]
-        # If both базовая and профильная → ambiguous, return None (caller should handle)
+        # If multiple math exams → ambiguous, return None (caller should handle)
         if len(math_exams) > 1:
             return None
+
+    # 4. Fuzzy: generic target matches specific exam via _is_generic_alias_of
+    # E.g. target="Математика" matches exam.subject="Базовая математика"
+    for exam in exams:
+        exam_canon = normalize_subject(exam.subject)
+        if _is_generic_alias_of(exam_canon, target_canon):
+            # target_canon is generic version of exam_canon → this is the right exam
+            return exam
 
     return None
 
@@ -174,25 +182,29 @@ def find_duplicate_exam_pairs(
             key_b = canonical_key(canon_b)
 
             if key_a == key_b:
-                # Same canonical → clear duplicate
-                # Keep the more specific name (longer subject string) or earlier ID
+                # Same canonical → clear duplicate.
+                # PRIMARY = the one with longer/more specific subject string.
                 if len(exam_a.subject) >= len(exam_b.subject):
-                    pairs.append((exam_a, exam_b))
+                    pairs.append((exam_a, exam_b))  # keep a, archive b
                     seen_ids.add(exam_b.id)
                 else:
-                    pairs.append((exam_b, exam_a))
+                    pairs.append((exam_b, exam_a))  # keep b, archive a
                     seen_ids.add(exam_a.id)
                 break
 
-            # Check if one is a generic alias of the other
-            # e.g. "Математика" ↔ "Базовая математика"
+            # "Математика" is generic alias of "Базовая математика":
+            # _is_generic_alias_of(specific="Базовая математика", generic="Математика") → True
             if _is_generic_alias_of(canon_a, canon_b):
-                pairs.append((exam_b, exam_a))  # exam_b (specific) is primary
-                seen_ids.add(exam_a.id)
+                # canon_a is specific (e.g. "Базовая математика"), canon_b is generic ("Математика")
+                # PRIMARY = exam_a (more specific), DUPLICATE = exam_b (generic)
+                pairs.append((exam_a, exam_b))
+                seen_ids.add(exam_b.id)
                 break
             elif _is_generic_alias_of(canon_b, canon_a):
-                pairs.append((exam_a, exam_b))  # exam_a (specific) is primary
-                seen_ids.add(exam_b.id)
+                # canon_b is specific, canon_a is generic
+                # PRIMARY = exam_b (more specific), DUPLICATE = exam_a (generic)
+                pairs.append((exam_b, exam_a))
+                seen_ids.add(exam_a.id)
                 break
 
     return pairs
@@ -200,10 +212,18 @@ def find_duplicate_exam_pairs(
 
 def _is_generic_alias_of(specific: str, generic: str) -> bool:
     """
-    Return True if `generic` is a generic version of `specific`.
-    E.g.: specific="Базовая математика", generic="Математика" → True
+    Return True if `generic` is a generic/ambiguous version of `specific`.
+
+    E.g.:
+        specific="Базовая математика", generic="Математика" → True
+        specific="Русский язык", generic="Математика" → False
+
+    Rule: generic key must be a suffix of specific key
+    ("математика" is a suffix of "базоваяматематика")
     """
-    gen_key = canonical_key(generic)
-    spec_key = canonical_key(specific)
-    # "математика" is a prefix of "базоваяматематика"
+    gen_key = canonical_key(normalize_subject(generic))
+    spec_key = canonical_key(normalize_subject(specific))
+    if not gen_key or not spec_key:
+        return False
+    # generic is shorter AND specific ends with the generic key
     return len(gen_key) < len(spec_key) and spec_key.endswith(gen_key)

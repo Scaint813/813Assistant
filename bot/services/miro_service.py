@@ -112,6 +112,24 @@ def _safe_content(text: str | None, max_len: int = 1000) -> str:
         return "—"
     return text[:max_len - 3] + "..." if len(text) > max_len else text
 
+def _hex_to_sticky(hex_color: str) -> str:
+    """Map a hex color to the nearest Miro sticky_note color name (best-effort)."""
+    MAPPING = {
+        "#7b44d8": "violet",
+        "#2d9bf0": "light_blue",
+        "#d32f2f": "red",
+        "#f6c000": "yellow",
+        "#64b5f6": "light_blue",
+        "#f57c00": "orange",
+        "#66bb6a": "light_green",
+        "#90a4ae": "light_gray",
+        "#b0bec5": "light_gray",
+        "#1a1a1a": "light_gray",
+        "#e0e0e0": "light_gray",
+    }
+    return MAPPING.get(hex_color.lower(), "light_gray")
+
+
 # ── Stable entity IDs for sections (never change → no duplicates on re-sync) ──
 # Range 5000-5999 reserved for Miro structural elements.
 _SECTION_ENTITY_IDS: dict[str, int] = {
@@ -233,7 +251,7 @@ class MiroService:
         stats: dict,
     ) -> tuple[str | None, str]:
         payload = {
-            "data": {"content": _safe_content(content), "format": "plain"},
+            "data": {"content": _safe_content(content)},
             "style": {
                 "fillColor": fill_hex,
                 "fillOpacity": "1.0",
@@ -264,6 +282,26 @@ class MiroService:
         new_id, op = await self._safe_request("post", base, payload, entity_type, entity_id, stats)
         if op == "created":
             stats["created"] += 1
+            return new_id, op
+
+        # Fallback: shape API failed → create a sticky_note header instead
+        if op == "error":
+            logger.warning(
+                "Miro shape failed, falling back to sticky_note for entity_type=%s id=%s",
+                entity_type, entity_id,
+            )
+            # Undo the error count since we're retrying
+            stats["errors"] = max(0, stats["errors"] - 1)
+            sticky_payload = {
+                "data": {"content": _safe_content(content, 400)},
+                "position": {"x": x, "y": y},
+                "style": {"fillColor": _safe_sticky_color(_hex_to_sticky(fill_hex))},
+            }
+            sticky_url = f"https://api.miro.com/v2/boards/{self.board_id}/sticky_notes"
+            new_id2, op2 = await self._safe_request("post", sticky_url, sticky_payload, entity_type, entity_id, stats)
+            if op2 == "created":
+                stats["created"] += 1
+                return new_id2, "created"
         return new_id, op
 
     # ── Sticky note (content card) ────────────────────────────────────────────
@@ -402,6 +440,32 @@ class MiroService:
             body = "нет активных действий"
         else:
             body = "\n".join(f"{i+1}. {a}" for i, a in enumerate(actions))
+
+        content = f"СЛЕДУЮЩИЙ ШАГ\n\nрежим: {mode}\n\n{body}"
+        x, y = self._card_xy("next", 0)
+        mp = await self._get_mapping(session, user_id, "miro_next_card", _SECTION_ENTITY_IDS["next_card"])
+        new_id, _ = await self._create_or_update_sticky(
+            mp.item_id, content, x, y, "light_blue", "miro_next_card",
+            _SECTION_ENTITY_IDS["next_card"], stats,
+        )
+        await self._save_mapping(mp, new_id or mp.item_id, x, y)
+        stats["cards"] += 1
+
+    async def _render_next_section_safe(self, session, user_id: int, time_service, next_step_service, stats: dict) -> None:
+        """Same as _render_next_section but catches NextStepService errors and shows fallback card."""
+        now = time_service.now()
+        t_str = now.strftime("%H:%M")
+        await self._render_section_header(session, user_id, "next", t_str, stats)
+
+        try:
+            payload = await next_step_service.build_next_step(user_id, session, now)
+            actions = payload.get("actions", [])[:3]
+            mode = payload.get("mode", "normal")
+            body = "\n".join(f"{i+1}. {a}" for i, a in enumerate(actions)) if actions else "нет активных действий"
+        except Exception as _exc:
+            logger.exception("NextStepService.build_next_step failed: %s", _exc)
+            body = "Следующий шаг временно недоступен"
+            mode = "error"
 
         content = f"СЛЕДУЮЩИЙ ШАГ\n\nрежим: {mode}\n\n{body}"
         x, y = self._card_xy("next", 0)
@@ -775,11 +839,10 @@ class MiroService:
             return
 
         # Sub-card layout: for each block, render 4 stickies side-by-side
-        # CARD_W = section column width / 4  (each sub-card is 1/4 of column)
         # We use synthetic col positions: block_i * 4 + sub_offset
         SECTION_KEY = "study_blocks"
-        COL_W = self._col_width    # base column width in px
-        CARD_H = self._card_height  # base card height in px
+        COL_W = COL_STRIDE          # column pitch as card-width reference
+        CARD_H = CARD_START_DY      # vertical offset as height reference
         BASE_X, BASE_Y = self._section_xy(SECTION_KEY)
         BASE_Y += CARD_H + 20       # below header
         SUB_W = max(200, COL_W // 4)  # each sub-card width
@@ -898,34 +961,46 @@ class MiroService:
         except Exception:
             pass
 
-        await self._render_board_header(session, user_id, now, stats)
-        await self._render_today_section(session, user_id, time_service, stats)
-        await self._render_next_section(session, user_id, time_service, next_step_service, stats)
-        await self._render_risks_section(session, user_id, time_service, stats)
-        await self._render_tasks_section(session, user_id, time_service, stats)
-        await self._render_reminders_section(session, user_id, time_service, stats)
-        await self._render_problems_section(session, user_id, time_service, stats)
-        await self._render_schedule_section(session, user_id, time_service, stats)
-        await self._render_checkins_section(session, user_id, time_service, cfg, stats)
-        await self._render_archive_section(session, user_id, time_service, stats)
-        await self._render_future_sections(session, user_id, time_service, stats)
-        # ── Study row (exams / schedule / blocks) ──────────────────────────
-        try:
-            await self._render_exams_section(session, user_id, time_service, stats)
-        except Exception as _exc:
-            logger.exception("Miro: _render_exams_section failed: %s", _exc)
-            stats["errors"] += 1
-        try:
-            await self._render_study_schedule_section(session, user_id, time_service, stats)
-        except Exception as _exc:
-            logger.exception("Miro: _render_study_schedule_section failed: %s", _exc)
-            stats["errors"] += 1
-        try:
-            await self._render_study_blocks_section(session, user_id, time_service, stats)
-        except Exception as _exc:
-            logger.exception("Miro: _render_study_blocks_section failed: %s", _exc)
-            stats["errors"] += 1
+        failed_sections = []
 
+        async def _safe_section(name, coro):
+            try:
+                await coro
+            except Exception as _exc:
+                logger.exception("Miro section FAILED [%s]: %s", name, _exc)
+                stats["errors"] += 1
+                failed_sections.append(name)
+
+        await _safe_section("board_header",
+            self._render_board_header(session, user_id, now, stats))
+        await _safe_section("today",
+            self._render_today_section(session, user_id, time_service, stats))
+        await _safe_section("next",
+            self._render_next_section_safe(session, user_id, time_service, next_step_service, stats))
+        await _safe_section("risks",
+            self._render_risks_section(session, user_id, time_service, stats))
+        await _safe_section("tasks",
+            self._render_tasks_section(session, user_id, time_service, stats))
+        await _safe_section("reminders",
+            self._render_reminders_section(session, user_id, time_service, stats))
+        await _safe_section("problems",
+            self._render_problems_section(session, user_id, time_service, stats))
+        await _safe_section("schedule",
+            self._render_schedule_section(session, user_id, time_service, stats))
+        await _safe_section("checkins",
+            self._render_checkins_section(session, user_id, time_service, cfg, stats))
+        await _safe_section("archive",
+            self._render_archive_section(session, user_id, time_service, stats))
+        await _safe_section("future",
+            self._render_future_sections(session, user_id, time_service, stats))
+        await _safe_section("exams",
+            self._render_exams_section(session, user_id, time_service, stats))
+        await _safe_section("study_schedule",
+            self._render_study_schedule_section(session, user_id, time_service, stats))
+        await _safe_section("study_blocks",
+            self._render_study_blocks_section(session, user_id, time_service, stats))
+
+        stats["failed_sections"] = failed_sections
         return stats
 
     # ── Debug helpers ─────────────────────────────────────────────────────────

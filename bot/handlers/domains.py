@@ -645,34 +645,44 @@ async def sync_miro(message: Message, session_factory, miro_service, time_servic
             await session.commit()
         errors = stats.get("errors", 0)
         total_items = stats.get("created", 0) + stats.get("updated", 0)
+        failed_sections = stats.get("failed_sections", [])
+
         if total_items == 0 and errors > 0:
-            result_header = "Miro: синхронизация не удалась."
+            result_header = "Miro не обновлён."
         elif errors > 0:
             result_header = "Miro обновлён частично."
         else:
             result_header = "Miro обновлён."
-        footer = (
-            f"\nЧасть элементов не создана: {errors}.\nСмотри логи:\njournalctl -u 813assistant -n 120 --no-pager"
-            if errors > 0 else "\nПроверь доску в Miro."
-        )
-        study_part = ""
+
+        lines = [
+            result_header, "",
+            f"Секции: {stats.get('sections', 0)}",
+            f"Карточки: {stats.get('cards', 0)}",
+            f"Создано: {stats.get('created', 0)}",
+            f"Обновлено: {stats.get('updated', 0)}",
+            f"Ошибки: {errors}",
+        ]
+
         if stats.get("exams", 0) or stats.get("schedule_items", 0) or stats.get("study_blocks", 0):
-            study_part = (
-                f"\n\nУчёба:\n"
-                f"Экзаменов: {stats.get('exams', 0)}\n"
-                f"Занятий: {stats.get('schedule_items', 0)}\n"
-                f"Блоков: {stats.get('study_blocks', 0)}"
-            )
-        await message.answer(
-            f"{result_header}\n\n"
-            f"Секции: {stats.get('sections', 0)}\n"
-            f"Карточки: {stats.get('cards', 0)}\n"
-            f"Создано: {stats.get('created', 0)}\n"
-            f"Обновлено: {stats.get('updated', 0)}\n"
-            f"Ошибки: {errors}"
-            f"{study_part}"
-            f"{footer}"
-        )
+            lines += [
+                "",
+                "Учёба:",
+                f"Экзаменов: {stats.get('exams', 0)}",
+                f"Занятий: {stats.get('schedule_items', 0)}",
+                f"Блоков: {stats.get('study_blocks', 0)}",
+            ]
+
+        if failed_sections:
+            lines += ["", "Проблемные секции:"]
+            for s in failed_sections:
+                lines.append(f"  — {s}")
+            lines.append("\nСмотри логи:\njournalctl -u 813assistant -n 120 --no-pager")
+        elif errors > 0:
+            lines.append("\nСмотри логи:\njournalctl -u 813assistant -n 120 --no-pager")
+        else:
+            lines.append("\nПроверь доску в Miro.")
+
+        await message.answer("\n".join(lines))
     except Exception:
         import logging
         logging.getLogger(__name__).exception("sync_miro unexpected error")

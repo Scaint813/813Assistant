@@ -4,6 +4,7 @@ import logging
 from datetime import datetime, timedelta
 
 from bot.database.queries import get_or_create_runtime_state, get_upcoming_overrides, touch_user_activity
+from bot.services.datetime_utils import ensure_aware
 from bot.keyboards.inline import checkin_keyboard, overload_keyboard, quiet_keyboard
 
 logger = logging.getLogger(__name__)
@@ -40,18 +41,27 @@ class CheckinService:
 
     async def should_send_checkin(self, user_id: int, checkin_type: str, session, now: datetime) -> bool:
         state = await get_or_create_runtime_state(session, user_id)
+        tz = now.tzinfo
         if not state.checkin_enabled:
+            logger.debug("checkin skip [%s %s]: disabled", user_id, checkin_type)
             return False
-        if state.quiet_until and state.quiet_until > now:
+        quiet_until = ensure_aware(state.quiet_until, tz)
+        if quiet_until and quiet_until > now:
+            logger.debug("checkin skip [%s %s]: quiet mode until %s", user_id, checkin_type, quiet_until)
             return False
-        if state.last_user_activity_at and state.last_user_activity_at >= now - timedelta(minutes=45):
+        last_activity = ensure_aware(state.last_user_activity_at, tz)
+        if last_activity and last_activity >= now - timedelta(minutes=45):
+            logger.debug("checkin skip [%s %s]: recent activity at %s", user_id, checkin_type, last_activity)
             return False
         if state.checkin_count_date != now.date():
             state.checkin_count_date = now.date()
             state.checkin_count_today = 0
         if state.checkin_count_today >= 3:
+            logger.debug("checkin skip [%s %s]: daily limit reached", user_id, checkin_type)
             return False
-        if state.last_checkin_at and state.last_checkin_at.date() == now.date() and state.last_checkin_at >= now - timedelta(hours=2):
+        last_checkin = ensure_aware(state.last_checkin_at, tz)
+        if last_checkin and last_checkin.date() == now.date() and last_checkin >= now - timedelta(hours=2):
+            logger.debug("checkin skip [%s %s]: sent recently at %s", user_id, checkin_type, last_checkin)
             return False
         return True
 

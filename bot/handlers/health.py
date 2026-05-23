@@ -341,3 +341,82 @@ async def dedupe_study_cmd(message: Message, session_factory, config, screen_ser
         await message.answer(text, reply_markup=kb)
 
     await screen_service.delete_user_input(message)
+
+
+@router.message(Command("debug_jobs"))
+async def debug_jobs_cmd(message: Message, reminder_scheduler, checkin_service, config):
+    """
+    List all APScheduler jobs: checkin + reminder + study_session.
+    Only accessible to ALLOWED_USER_ID.
+    """
+    if message.from_user.id != config.allowed_user_id:
+        return
+
+    # Collect jobs from both schedulers
+    all_jobs = []
+
+    # Reminder scheduler
+    try:
+        for job in reminder_scheduler.scheduler.get_jobs():
+            all_jobs.append(("reminder_sched", job))
+    except Exception as exc:
+        all_jobs.append(("error", f"reminder_scheduler: {exc}"))
+
+    # Checkin scheduler
+    try:
+        for job in checkin_service.scheduler.get_jobs():
+            all_jobs.append(("checkin_sched", job))
+    except Exception as exc:
+        all_jobs.append(("error", f"checkin_scheduler: {exc}"))
+
+    if not all_jobs:
+        await message.answer("/debug_jobs\n\nДжобов нет или планировщики не запущены.")
+        return
+
+    lines = [f"/debug_jobs  ({len(all_jobs)} jobs)\n"]
+    checkin_jobs = []
+    reminder_jobs = []
+    study_jobs = []
+    other_jobs = []
+
+    for source, job in all_jobs:
+        if isinstance(job, str):
+            other_jobs.append(f"  ERROR: {job}")
+            continue
+        job_id = getattr(job, "id", "?")
+        next_run = getattr(job, "next_run_time", None)
+        next_str = next_run.strftime("%m-%d %H:%M") if next_run else "paused"
+
+        entry = f"  {job_id} → {next_str}"
+        if job_id.startswith("checkin:"):
+            checkin_jobs.append(entry)
+        elif job_id.startswith("reminder:"):
+            reminder_jobs.append(entry)
+        elif job_id.startswith("study_session:"):
+            study_jobs.append(entry)
+        else:
+            other_jobs.append(entry)
+
+    if checkin_jobs:
+        lines.append("Чекины:")
+        lines.extend(checkin_jobs)
+        lines.append("")
+    if reminder_jobs:
+        lines.append(f"Напоминания ({len(reminder_jobs)}):")
+        lines.extend(reminder_jobs[:10])
+        if len(reminder_jobs) > 10:
+            lines.append(f"  ...ещё {len(reminder_jobs) - 10}")
+        lines.append("")
+    if study_jobs:
+        lines.append(f"Учебные сессии ({len(study_jobs)}):")
+        lines.extend(study_jobs)
+        lines.append("")
+    else:
+        lines.append("Учебные сессии: нет")
+        lines.append("  (study_session jobs пока не реализованы)\n")
+    if other_jobs:
+        lines.append("Прочее:")
+        lines.extend(other_jobs)
+
+    await message.answer("\n".join(lines))
+
