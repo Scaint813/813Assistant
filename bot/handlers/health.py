@@ -16,6 +16,9 @@ from bot.database.queries import (
     get_archived_tasks,
     get_or_create_runtime_state,
     get_upcoming_overrides,
+    find_duplicate_exams,
+    archive_exam_date,
+    get_exam_date_by_id,
 )
 
 logger = logging.getLogger(__name__)
@@ -283,4 +286,58 @@ async def debug_db_state_cmd(message: Message, session_factory, time_service, co
     text = "\n".join(lines)
     for i in range(0, len(text), 3800):
         await message.answer(text[i:i+3800])
+    await screen_service.delete_user_input(message)
+
+
+@router.message(Command("dedupe_study"))
+async def dedupe_study_cmd(message: Message, session_factory, config, screen_service):
+    """
+    Find duplicate exam_dates and offer inline buttons to archive duplicates.
+    Only accessible to ALLOWED_USER_ID.
+    """
+    if message.from_user.id != config.allowed_user_id:
+        return
+
+    from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+
+    try:
+        async with session_factory() as session:
+            pairs = await find_duplicate_exams(session, message.from_user.id)
+            await session.commit()
+    except Exception as exc:
+        await message.answer(f"Ошибка при поиске дублей: {exc}")
+        await screen_service.delete_user_input(message)
+        return
+
+    if not pairs:
+        await message.answer(
+            "/dedupe_study\n\nДублей не найдено.\n\n"
+            "Все предметы имеют уникальные канонические имена."
+        )
+        await screen_service.delete_user_input(message)
+        return
+
+    lines = ["/dedupe_study\n", f"Найдено пар дублей: {len(pairs)}\n"]
+    keyboards = []
+
+    for primary, dup in pairs:
+        lines.append(f"Оставить: {primary.subject} ({primary.exam_date})")
+        lines.append(f"Убрать:   {dup.subject} ({dup.exam_date})")
+        lines.append("")
+        kb = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(
+                text=f"Убрать «{dup.subject}»",
+                callback_data=f"dedupe_archive:{dup.id}:{primary.id}",
+            ),
+            InlineKeyboardButton(
+                text="Оставить оба",
+                callback_data=f"dedupe_keep:{dup.id}",
+            ),
+        ]])
+        keyboards.append((f"Дубль: {dup.subject} → {primary.subject}", kb))
+
+    await message.answer("\n".join(lines))
+    for text, kb in keyboards:
+        await message.answer(text, reply_markup=kb)
+
     await screen_service.delete_user_input(message)

@@ -4,6 +4,7 @@ import json
 from datetime import datetime, timedelta
 
 from bot.database.queries import add_problem_event, create_problem_block, get_active_problem_blocks, get_problem_block_by_id
+from bot.services.study_problem_templates import build_study_problem_plan
 
 
 class ProblemBlockService:
@@ -21,15 +22,40 @@ class ProblemBlockService:
         if category == "exam" and not deadline and now.date().isoformat() <= "2026-06-18":
             deadline = datetime.fromisoformat("2026-06-18T23:59:00+00:00")
         review_delta = timedelta(hours=6 if self._norm_priority(intent.get("priority")) in {"high", "urgent"} else 24)
+
+        # ── Enrich exam/study blocks with curated templates ───────────────────
+        title = intent.get("title") or "Активный блок"
+        problem_text = intent.get("problem_text") or ""
+        solution_strategy = intent.get("solution_strategy") or ""
+        next_action = intent.get("next_action") or "Сделать первый короткий шаг."
+
+        if category in {"exam", "study"}:
+            subject = intent.get("subject") or ""
+            try:
+                plan = build_study_problem_plan(subject, title, problem_text)
+                # Override with template values if they are more specific
+                if plan.get("next_action"):
+                    next_action = plan["next_action"]
+                if plan.get("theory_topics"):
+                    theory = "\n".join(f"{i}. {t}" for i, t in enumerate(plan["theory_topics"], 1))
+                    solution_strategy = f"Темы для повторения:\n{theory}"
+                # Merge miro_plan into resources_json
+                merged_resources = list(resources or [])
+                merged_resources.append({"type": "study_plan", "plan": plan.get("miro_plan", {})})
+                resources = merged_resources
+            except Exception as _exc:
+                import logging
+                logging.getLogger(__name__).warning("study_problem_templates failed: %s", _exc)
+
         block = await create_problem_block(
             session,
             user_id,
             category=category,
-            title=intent.get("title") or "Активный блок",
+            title=title,
             description=intent.get("description") or "",
-            problem_text=intent.get("problem_text") or "",
-            solution_strategy=intent.get("solution_strategy") or "",
-            next_action=intent.get("next_action") or "Сделать первый короткий шаг.",
+            problem_text=problem_text,
+            solution_strategy=solution_strategy,
+            next_action=next_action,
             status="active",
             priority=self._norm_priority(intent.get("priority")),
             pressure_level=self._norm_pressure(intent.get("pressure_level")),

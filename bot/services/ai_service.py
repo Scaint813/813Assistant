@@ -36,6 +36,9 @@ SYSTEM_PROMPT = """
   get_problem_resources
   set_exam_date
   create_study_schedule_item
+  update_exam_date
+  delete_exam_date
+  delete_study_schedule_item
 
 КРИТИЧЕСКИ ВАЖНЫЕ ПРАВИЛА:
 
@@ -60,6 +63,18 @@ SYSTEM_PROMPT = """
 5. Одно сообщение может содержать несколько intents — список intents может быть длиннее 1.
 
 6. Сегодня: {TODAY}. Используй для вычисления дат.
+
+7. update_exam_date — когда пользователь хочет изменить дату существующего экзамена.
+   Пример: "поставь базовую математику 8 июня" → update_exam_date {target_subject: "Базовая математика", new_date: "2026-06-08"}
+   Пример: "перенеси русский на 1 июня" → update_exam_date {target_subject: "Русский язык", new_date: "2026-06-01"}
+   Пример: "математика 8 июня" (если уже есть в системе) → update_exam_date (не set_exam_date!)
+
+8. delete_exam_date — когда пользователь хочет убрать/удалить экзамен.
+   Пример: "убери экзамен математика" → delete_exam_date {target_subject: "Математика"}
+   Пример: "удали дубль математика" → delete_exam_date {target_subject: "Математика"}
+
+9. delete_study_schedule_item — когда пользователь хочет убрать занятие.
+   Пример: "убери занятие по английскому в воскресенье" → delete_study_schedule_item {target_subject: "Английский", weekday: "sun"}
 """.strip()
 
 
@@ -69,6 +84,7 @@ class Intent(BaseModel):
         "create_problem_block", "update_problem_block", "complete_problem_block",
         "archive_problem_block", "show_problem_blocks", "get_problem_solution",
         "get_problem_resources", "set_exam_date", "create_study_schedule_item",
+        "update_exam_date", "delete_exam_date", "delete_study_schedule_item",
     ]
     title: str | None = None
     description: str | None = None
@@ -97,6 +113,9 @@ class Intent(BaseModel):
     recurrence: str | None = None
     tutor_name: str | None = None
     location_or_link: str | None = None
+    # update/delete fields
+    target_subject: str | None = None   # for update_exam_date / delete_exam_date
+    new_date: str | None = None         # for update_exam_date
 
 
 class AIResult(BaseModel):
@@ -179,6 +198,35 @@ class AIService:
         if any(p in lowered for p in ("отдыхаю", "день отдыха", "ничего не ставь", "без тренировки")):
             date_val = "today" if "сегодня" in lowered else ("tomorrow" if "завтра" in lowered else "today")
             return {"intents": [{"type": "rest_day", "date": date_val, "title": "День отдыха", "create_tasks": False, "write_to_miro": False}]}
+
+        # ── Update/delete detection (BEFORE create) ───────────────────────────────
+        update_kws = ("поставь", "перенеси", "измени", "поменяй", "обнови", "исправь")
+        delete_kws = ("убери", "удали", "отмени", "уберём", "архивируй", "не нужен")
+
+        # update_exam_date
+        if any(k in lowered for k in update_kws) and any(k in lowered for k in ("экзамен", "егэ", "математик", "русск", "обществ", "английск", "базов", "профил")):
+            date_val = self._parse_date_from_text(lowered)
+            subject = self._norm_subject(text)
+            if date_val and subject:
+                return {"intents": [{"type": "update_exam_date", "target_subject": subject, "new_date": date_val}]}
+
+        # delete_exam_date
+        if any(k in lowered for k in delete_kws) and any(k in lowered for k in ("экзамен", "егэ", "математик", "русск", "обществ", "английск", "базов", "профил")):
+            subject = self._norm_subject(text)
+            return {"intents": [{"type": "delete_exam_date", "target_subject": subject}]}
+
+        # delete_study_schedule_item
+        if any(k in lowered for k in delete_kws) and any(k in lowered for k in ("занятие", "репетитор", "урок")):
+            subject = self._norm_subject(text)
+            weekday = None
+            for word, code in self._WEEKDAY_MAP.items():
+                if word in lowered:
+                    weekday = code
+                    break
+            intent_d = {"type": "delete_study_schedule_item", "target_subject": subject}
+            if weekday:
+                intent_d["weekday"] = weekday
+            return {"intents": [intent_d]}
 
         # ── Exam date detection ────────────────────────────────────────────────
         # Triggers: егэ|экзамен|эге + предмет + (число + месяц или дата)
@@ -274,9 +322,21 @@ class AIService:
     }
 
     _SUBJECT_NORM = {
-        "русск": "Русский",
-        "общество": "Обществознание",
+        # Specials FIRST (longer keys before shorter to avoid partial match)
+        "письменный английский": "Письменный английский",
+        "письменн": "Письменный английский",
+        "устный английский": "Устный английский",
+        "устн": "Устный английский",
+        "базовая математика": "Базовая математика",
+        "профильная математика": "Профильная математика",
+        "профильн": "Профильная математика",
+        "базов": "Базовая математика",
+        "база": "Базовая математика",
+        # Generic
+        "русский язык": "Русский язык",
+        "русск": "Русский язык",
         "обществозн": "Обществознание",
+        "общество": "Обществознание",
         "математик": "Математика",
         "английск": "Английский",
         "истори": "История",

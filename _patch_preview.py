@@ -1,4 +1,7 @@
-from __future__ import annotations
+#!/usr/bin/env python3
+"""Overwrite action_preview.py with full updated version."""
+
+CONTENT = '''from __future__ import annotations
 
 from datetime import datetime
 
@@ -11,7 +14,7 @@ def render_preview(parsed: dict) -> str:
     """
     intents = parsed.get("intents") or []
     if not intents:
-        return "Я понял так:\n\nНичего не зафиксировано.\n\nПодтвердить?"
+        return "Я понял так:\\n\\nНичего не зафиксировано.\\n\\nПодтвердить?"
 
     # Group intents by type
     exams          = [i for i in intents if i.get("type") == "set_exam_date"]
@@ -38,35 +41,35 @@ def render_preview(parsed: dict) -> str:
     if t == "create_reminder":
         when = datetime.fromisoformat(first["remind_at"]).strftime("%Y-%m-%d %H:%M")
         return (
-            "Я понял так:\n\n"
-            f"1. Создать напоминание:\n{first.get('text', '')}\n"
-            f"Время: {when}\n\n"
+            "Я понял так:\\n\\n"
+            f"1. Создать напоминание:\\n{first.get(\'text\', \'\')}\\n"
+            f"Время: {when}\\n\\n"
             "Подтвердить?"
         )
 
     if t in {"schedule_override", "rest_day"}:
         return (
-            "Я понял так:\n\n"
-            "1. Поставить день отдыха.\n"
-            "2. Не создавать тренировочные задачи.\n"
-            "3. Ничего не добавлять в Miro.\n\n"
+            "Я понял так:\\n\\n"
+            "1. Поставить день отдыха.\\n"
+            "2. Не создавать тренировочные задачи.\\n"
+            "3. Ничего не добавлять в Miro.\\n\\n"
             "Подтвердить?"
         )
 
     if t == "create_problem_block":
         return (
-            "СИТУАЦИЯ\n"
-            f"Проблема: {first.get('problem_text') or first.get('title')}\n\n"
-            "ВЫВОД\nНужен активный блок с коротким решением.\n\n"
-            "ДЕЙСТВИЕ\n"
-            "1. Создать активный блок решения.\n"
-            f"2. Следующий шаг: {first.get('next_action')}\n"
-            "3. Добавить блок в /next.\n\n"
+            "СИТУАЦИЯ\\n"
+            f"Проблема: {first.get(\'problem_text\') or first.get(\'title\')}\\n\\n"
+            "ВЫВОД\\nНужен активный блок с коротким решением.\\n\\n"
+            "ДЕЙСТВИЕ\\n"
+            "1. Создать активный блок решения.\\n"
+            f"2. Следующий шаг: {first.get(\'next_action\')}\\n"
+            "3. Добавить блок в /next.\\n\\n"
             "Подтвердить?"
         )
 
     title = first.get("title") or ""
-    return f"Я понял так:\n\n1. Создать задачу:\n{title}\n\nПодтвердить?"
+    return f"Я понял так:\\n\\n1. Создать задачу:\\n{title}\\n\\nПодтвердить?"
 
 
 def _is_study_context(problem_blocks: list) -> bool:
@@ -82,7 +85,7 @@ _WEEKDAY_RU = {
 def _render_edit_package(
     update_exams, delete_exams, delete_sched, also_create_exams, also_create_problems,
 ) -> str:
-    lines = ["ПРОВЕРКА\n"]
+    lines = ["ПРОВЕРКА\\n"]
 
     if update_exams:
         lines.append("Обновить даты экзаменов:")
@@ -110,23 +113,23 @@ def _render_edit_package(
     if also_create_exams:
         lines.append("Также добавить:")
         for e in also_create_exams:
-            lines.append(f"• {e.get('subject')} — {_fmt_date(e.get('exam_date') or '')}")
+            lines.append(f"• {e.get(\'subject\')} — {_fmt_date(e.get(\'exam_date\') or \'\')}")
         lines.append("")
 
     if also_create_problems:
         for p in also_create_problems:
-            lines.append(f"Проблема: {p.get('title') or p.get('problem_text')}")
-            lines.append(f"Следующий шаг: {p.get('next_action') or '—'}")
+            lines.append(f"Проблема: {p.get(\'title\') or p.get(\'problem_text\')}")
+            lines.append(f"Следующий шаг: {p.get(\'next_action\') or \'—\'}")
         lines.append("")
 
     lines.append("Подтвердить?")
-    return "\n".join(lines)
+    return "\\n".join(lines)
 
 
 def _render_study_package(
     exams, schedule, problems, tasks, reminders,
 ) -> str:
-    lines = ["ПРОВЕРКА\n"]
+    lines = ["ПРОВЕРКА\\n"]
 
     if exams:
         lines.append("Экзамены:")
@@ -142,7 +145,7 @@ def _render_study_package(
             subject = s.get("subject") or "Предмет"
             wd = _WEEKDAY_RU.get(s.get("weekday") or "mon", s.get("weekday") or "")
             t = s.get("time_str") or ""
-            tutor = f"  ({s['tutor_name']})" if s.get("tutor_name") else ""
+            tutor = f"  ({s[\'tutor_name\']})" if s.get("tutor_name") else ""
             lines.append(f"{i}. {subject} — {wd}, {t}.{tutor}")
         lines.append("")
 
@@ -161,13 +164,13 @@ def _render_study_package(
     if other_problems:
         lines.append("Блоки:")
         for i, p in enumerate(other_problems, 1):
-            lines.append(f"{i}. {p.get('title') or p.get('problem_text') or 'Проблема'}.")
+            lines.append(f"{i}. {p.get(\'title\') or p.get(\'problem_text\') or \'Проблема\'}.")
         lines.append("")
 
     if tasks:
         lines.append("Задачи:")
         for i, task in enumerate(tasks, 1):
-            lines.append(f"{i}. {task.get('title') or 'Задача'}.")
+            lines.append(f"{i}. {task.get(\'title\') or \'Задача\'}.")
         lines.append("")
 
     if reminders:
@@ -175,13 +178,13 @@ def _render_study_package(
         for i, r in enumerate(reminders, 1):
             when = ""
             if r.get("remind_at"):
-                when = f" — {datetime.fromisoformat(r['remind_at']).strftime('%H:%M')}"
-            lines.append(f"{i}. {r.get('text') or 'Напоминание'}{when}.")
+                when = f" — {datetime.fromisoformat(r[\'remind_at\']).strftime(\'%H:%M\')}"
+            lines.append(f"{i}. {r.get(\'text\') or \'Напоминание\'}{when}.")
         lines.append("")
 
-    lines.append("Действие: сохранить учебный контур подготовки.\n")
+    lines.append("Действие: сохранить учебный контур подготовки.\\n")
     lines.append("Подтвердить?")
-    return "\n".join(lines)
+    return "\\n".join(lines)
 
 
 def _fmt_date(iso_date: str) -> str:
@@ -191,3 +194,9 @@ def _fmt_date(iso_date: str) -> str:
         return f"{d.day} {_MONTHS[d.month - 1]}"
     except Exception:
         return iso_date
+'''
+
+path = "bot/services/action_preview.py"
+with open(path, "w", encoding="utf-8") as f:
+    f.write(CONTENT)
+print("OK: action_preview.py rewritten")
