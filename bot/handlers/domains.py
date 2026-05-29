@@ -265,11 +265,14 @@ async def confirm_preview(callback: CallbackQuery, session_factory, reminder_sch
     # Edit the preview message — remove keyboard, show result
     await callback.message.edit_text(result_text, reply_markup=None)
 
-    # For problem blocks — send a separate action message (not a screen)
+    # For problem blocks — send a separate short action message
     for block in created_problem_blocks[:1]:
+        next_step = (block.next_action or "сделать первый шаг")[:80]
         await callback.message.answer(
-            "Фиксирую проблему.\nЭто активный блок.\n\nРешение коротко:\n"
-            + problem_block_service.build_problem_solution_summary(block),
+            f"Готово. Блок открыт.\n\n"
+            f"{block.title}\n\n"
+            f"Следующий шаг:\n{next_step}\n\n"
+            "Подробный план отправится в Miro после /sync_miro.",
             reply_markup=problem_block_keyboard(block.id),
         )
 
@@ -777,3 +780,83 @@ async def dedupe_keep_callback(callback: CallbackQuery):
     """Handle dedupe skip: keep both exams."""
     await callback.answer()
     await callback.message.edit_text("Оставляю оба. Если нужно — удали вручную через /dedupe_study.", reply_markup=None)
+
+
+# ── Miro clear bot zone callbacks ─────────────────────────────────────────────
+
+@router.callback_query(F.data == "miro_clear_cancel")
+async def miro_clear_cancel(callback: CallbackQuery):
+    """Cancel bot-zone clear."""
+    await callback.answer()
+    await callback.message.edit_text("Отменено. Авторские элементы остались.", reply_markup=None)
+
+
+@router.callback_query(F.data == "miro_clear_confirm")
+async def miro_clear_confirm(callback: CallbackQuery, session_factory, miro_service, config):
+    """
+    Delete all bot-created Miro items (those stored in miro_mappings).
+    Only items with a non-empty item_id are sent to Miro DELETE API.
+    Then clears all miro_mappings rows for this user in DB.
+    Never touches manually-created user elements.
+    """
+    import logging as _logging
+    import httpx
+    _log = _logging.getLogger(__name__)
+
+    await callback.answer()
+    if callback.from_user.id != config.allowed_user_id:
+        await callback.message.edit_text("Нет доступа.", reply_markup=None)
+        return
+
+    if not miro_service.is_configured():
+        await callback.message.edit_text("Miro не настроен. Нечего удалять.", reply_markup=None)
+        return
+
+    from sqlalchemy import select, delete as _delete
+    from bot.database.models import MiroMapping
+
+    deleted_from_miro = 0
+    not_found = 0
+    errors = 0
+
+    async with session_factory() as session:
+        res = await session.execute(
+            select(MiroMapping).where(MiroMapping.user_id == callback.from_user.id)
+        )
+        mappings = list(res.scalars().all())
+
+        # Delete each item from Miro board via API
+        headers = {"Authorization": f"Bearer {miro_service.token}"}
+        for mp in mappings:
+            if not mp.item_id:
+                continue
+            url = f"https://api.miro.com/v2/boards/{miro_service.board_id}/items/{mp.item_id}"
+            try:
+                async with httpx.AsyncClient(timeout=15.0) as client:
+                    r = await client.delete(url, headers=headers)
+                if r.status_code in (200, 204):
+                    deleted_from_miro += 1
+                elif r.status_code == 404:
+                    not_found += 1  # already removed from board manually
+                else:
+                    _log.warning("miro_clear DELETE FAIL %s: %s", mp.item_id, r.status_code)
+                    errors += 1
+            except Exception as exc:
+                _log.warning("miro_clear DELETE error %s: %s", mp.item_id, exc)
+                errors += 1
+
+        # Clear all mappings from DB so next /sync_miro creates fresh items
+        await session.execute(
+            _delete(MiroMapping).where(MiroMapping.user_id == callback.from_user.id)
+        )
+        await session.commit()
+
+    text = (
+        "MIRO / ОЧИСТКА ЗАВЕРШЕНА\n\n"
+        f"Удалено из Miro: {deleted_from_miro}\n"
+        f"Не найдено (уже удалено): {not_found}\n"
+        f"Ошибок: {errors}\n\n"
+        "Маппинги в DB очищены.\n"
+        "Следующий /sync_miro создаст новый dashboard."
+    )
+    await callback.message.edit_text(text, reply_markup=None)

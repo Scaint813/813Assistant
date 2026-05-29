@@ -64,6 +64,17 @@ MAX_SCHEDULE = 5
 BOARD_HEADER_DY = -500  # relative to base_y
 BOARD_HEADER_W = COL_STRIDE * 3 - 300   # 6000
 
+# ── Study dashboard constants ────────────────────────────────────────────────────────────────
+STUDY_SHAPE_W = 2000          # wider header for study sections
+STUDY_SHAPE_H = 120
+
+# Cluster: 6 sub-cards per block (3 per row, 2 rows)
+CLUSTER_COL_W = 900           # sub-card column width in cluster (increased for readability)
+CLUSTER_ROW_H = 700           # sub-card row height in cluster (increased for readability)
+CLUSTER_GAP_X = 30            # gap between sub-cards horizontally
+CLUSTER_GAP_Y = 30            # gap between sub-card rows
+CLUSTER_BLOCK_GAP = 160       # vertical gap between separate blocks
+
 # ── Section definitions ────────────────────────────────────────────────────────
 #   key -> (col, row, label, hex_fill, hex_text)
 SECTIONS: dict[str, tuple[int, int, str, str, str]] = {
@@ -80,10 +91,13 @@ SECTIONS: dict[str, tuple[int, int, str, str, str]] = {
     "orders":        (1, 3, "ЗАКАЗЫ",                  "#b0bec5", "#1a1a1a"),
     "body":          (2, 3, "ТЕЛО",                    "#b0bec5", "#1a1a1a"),
     "protocols":     (3, 3, "ПРОТОКОЛЫ",               "#b0bec5", "#1a1a1a"),
-    # Row 4 — учёба (3 dedicated sections)
+    # Row 4 — учёба (3 dedicated study sections)
     "exams":         (0, 4, "ЭКЗАМЕНЫ / ДЕДЛАЙНЫ",     "#d32f2f", "#ffffff"),
     "study_schedule":(1, 4, "РАСПИСАНИЕ / РЕПЕТИТОРЫ",  "#2d9bf0", "#ffffff"),
     "study_blocks":  (2, 4, "УЧЕБНЫЕ БЛОКИ",            "#f57c00", "#ffffff"),
+    # Row 5 — агрегированные секции
+    "subject_plan":  (0, 5, "ПЛАН ПО ПРЕДМЕТАМ",        "#7b44d8", "#ffffff"),
+    "next_72h":      (1, 5, "СЛЕДУЮЩИЕ 72 ЧАСА",          "#2d9bf0", "#ffffff"),
     # keep study key for legacy mapping header (hidden, offset far right)
     "study":         (5, 4, "УЧЁБА (legacy)",           "#e0e0e0", "#9e9e9e"),
 }
@@ -129,7 +143,6 @@ def _hex_to_sticky(hex_color: str) -> str:
     }
     return MAPPING.get(hex_color.lower(), "light_gray")
 
-
 # ── Stable entity IDs for sections (never change → no duplicates on re-sync) ──
 # Range 5000-5999 reserved for Miro structural elements.
 _SECTION_ENTITY_IDS: dict[str, int] = {
@@ -145,15 +158,17 @@ _SECTION_ENTITY_IDS: dict[str, int] = {
     "archive_header":   5013,  "archive_card":   5014,
     "money_header":     5015,  "money_card":     5016,
     "orders_header":    5017,  "orders_card":    5018,
-    "study_header":          5019,  "study_card":          5020,
-    "body_header":           5021,  "body_card":           5022,
-    "protocols_header":      5023,  "protocols_card":      5024,
-    # New study sections (row 4)
+    "study_header":     5019,  "study_card":     5020,
+    "body_header":      5021,  "body_card":      5022,
+    "protocols_header": 5023,  "protocols_card": 5024,
+    # Study sections (row 4)
     "exams_header":          5025,
     "study_schedule_header": 5026,
     "study_blocks_header":   5027,
-    "money_header":          5028,  "money_card":          5029,
-    "orders_header":         5030,  "orders_card":         5031,
+    # Aggregated study sections (row 5)
+    "subject_plan_header":   5032,
+    "next_72h_header":       5033,
+    "next_72h_card":         5034,
 }
 
 
@@ -728,6 +743,13 @@ class MiroService:
     # ── Section: ЭКЗАМЕНЫ ────────────────────────────────────────────────────
 
     async def _render_exams_section(self, session, user_id: int, time_service, stats: dict) -> None:
+        """
+        Informative exam cards: subject, date, days left, status, subject-specific focus.
+        Deduplicates exams by normalized subject key (keeps closest future date).
+        """
+        from bot.services.study_problem_plan_builder import exam_focus_text, _days_status
+        from bot.services.study_problem_templates import _extract_subject_key
+
         now = time_service.now()
         today = now.date()
         t_str = now.strftime("%H:%M")
@@ -746,24 +768,54 @@ class MiroService:
             stats["cards"] += 1
             return
 
-        for i, e in enumerate(exams):
+        # Deduplicate by canonical subject key (closest future exam wins)
+        seen_subjects: dict[str, object] = {}
+        for e in sorted(exams, key=lambda x: x.exam_date):
+            sk = _extract_subject_key(e.subject, e.subject, "")
+            if sk not in seen_subjects:
+                seen_subjects[sk] = e
+        deduped_exams = list(seen_subjects.values())
+
+        _STATUS_LABEL = {
+            "urgent": "срочно",
+            "high":   "высокий приоритет",
+            "medium": "контроль базы",
+            "normal": "планомерно",
+        }
+
+        for i, e in enumerate(deduped_exams):
             days_left = (e.exam_date - today).days
+            subject_key = _extract_subject_key(e.subject, e.subject, "")
+
             if days_left < 0:
                 color = "light_gray"
                 days_str = "прошло"
-            elif days_left <= 7:
-                color = "red"
-                days_str = f"ОСТАЛОСЬ {days_left} ДН.!"
-            elif days_left <= 14:
-                color = "red"
-                days_str = f"осталось {days_left} дн."
-            elif days_left <= 30:
-                color = "orange"
-                days_str = f"осталось {days_left} дн."
+                status_str = "закрыт"
+                focus = "проанализировать результаты."
             else:
-                color = "light_blue"
-                days_str = f"осталось {days_left} дн."
-            content = f"ЭКЗАМЕН\n{e.subject}\nДата: {e.exam_date.strftime('%d.%m.%Y')}\n{days_str}"
+                status_key = _days_status(days_left)
+                status_str = _STATUS_LABEL.get(status_key, "планомерно")
+                focus = exam_focus_text(subject_key, days_left)
+                if days_left <= 7:
+                    color = "red"
+                    days_str = f"ОСТАЛОСЬ {days_left} ДН.!"
+                elif days_left <= 14:
+                    color = "red"
+                    days_str = f"осталось {days_left} дн."
+                elif days_left <= 30:
+                    color = "orange"
+                    days_str = f"осталось {days_left} дн."
+                else:
+                    color = "light_blue"
+                    days_str = f"осталось {days_left} дн."
+
+            content = (
+                f"ЭКЗАМЕН\n{e.subject}\n\n"
+                f"Дата: {e.exam_date.strftime('%d.%m')}\n"
+                f"Осталось: {days_str}\n"
+                f"Статус: {status_str}\n\n"
+                f"Фокус:\n{focus}"
+            )
             x, y = self._card_xy("exams", i)
             mp = await self._get_mapping(session, user_id, "exam_date", e.id)
             new_id, _ = await self._create_or_update_sticky(
@@ -775,6 +827,12 @@ class MiroService:
     # ── Section: РАСПИСАНИЕ / РЕПЕТИТОРЫ ─────────────────────────────────────
 
     async def _render_study_schedule_section(self, session, user_id: int, time_service, stats: dict) -> None:
+        """
+        Tutor session cards: subject, day+time, tutor name, subject-specific preparation hints.
+        """
+        from bot.services.study_problem_plan_builder import tutor_prepare_hints
+        from bot.services.study_problem_templates import _extract_subject_key
+
         now = time_service.now()
         t_str = now.strftime("%H:%M")
         await self._render_section_header(session, user_id, "study_schedule", t_str, stats)
@@ -796,11 +854,20 @@ class MiroService:
 
         _WDAY = {"mon": "Пн", "tue": "Вт", "wed": "Ср", "thu": "Чт",
                  "fri": "Пт", "sat": "Сб", "sun": "Вс"}
+
         for i, s in enumerate(schedule):
             wd = _WDAY.get(s.weekday or "", s.weekday or "")
             t = s.time_str or ""
+            subject_key = _extract_subject_key(s.subject or "", s.subject or "", "")
+            hints = tutor_prepare_hints(subject_key)
+            hints_text = "\n".join(f"{j}. {h}" for j, h in enumerate(hints, 1))
+
             tutor_line = f"\n{s.tutor_name}" if s.tutor_name else ""
-            content = f"ЗАНЯТИЕ\n{s.subject}\n{wd}, {t}{tutor_line}"
+            content = (
+                f"ЗАНЯТИЕ\n{s.subject}\n\n"
+                f"{wd} {t}{tutor_line}\n\n"
+                f"Что подготовить:\n{hints_text}"
+            )
             x, y = self._card_xy("study_schedule", i)
             mp = await self._get_mapping(session, user_id, "study_schedule_item", s.id)
             new_id, _ = await self._create_or_update_sticky(
@@ -809,16 +876,19 @@ class MiroService:
             await self._save_mapping(mp, new_id or mp.item_id, x, y)
             stats["cards"] += 1
 
+
     # ── Section: УЧЕБНЫЕ БЛОКИ ────────────────────────────────────────────────
 
     async def _render_study_blocks_section(self, session, user_id: int, time_service, stats: dict) -> None:
         """
-        Render study problem blocks section.
-        For each block: 4 sticky notes side by side (ПРОБЛЕМА | ТЕМЫ | ПРАКТИКА | СЛЕДУЮЩИЙ ШАГ).
-        Each block occupies one column position. sticky offset: block_col * 4 within section.
-        Uses stable entity IDs: block.id * 10 + sub_card_offset (0-3).
+        Deep cluster for each study/exam problem block: 6 cards (3x2 grid).
+        Row A: ПРОБЛЕМА | ДИАГНОСТИКА | ТЕМЫ
+        Row B: ПРАКТИКА | КОНТРОЛЬ    | СЛЕДУЮЩИЙ ШАГ
+        Content built via StudyProblemPlanBuilder — NO raw transcript in Miro.
+        Entity type: problem_block_card, entity_id = block.id * 10 + slot_offset (0-5).
         """
-        import json as _json
+        from bot.services.study_problem_plan_builder import build_plan
+
         now = time_service.now()
         t_str = now.strftime("%H:%M")
         await self._render_section_header(session, user_id, "study_blocks", t_str, stats)
@@ -830,7 +900,7 @@ class MiroService:
             mp = await self._get_mapping(session, user_id, "miro_study_bl_empty",
                                          _SECTION_ENTITY_IDS["study_blocks_header"] + 50)
             new_id, _ = await self._create_or_update_sticky(
-                mp.item_id, "Учебных блоков нет.",
+                mp.item_id, "Учебных блоков нет.\nСоздай блок: \"проблема с заданием 21\"",
                 x, y, "light_gray", "miro_study_bl_empty",
                 _SECTION_ENTITY_IDS["study_blocks_header"] + 50, stats,
             )
@@ -838,112 +908,256 @@ class MiroService:
             stats["cards"] += 1
             return
 
-        # Sub-card layout: for each block, render 4 stickies side-by-side
-        # We use synthetic col positions: block_i * 4 + sub_offset
-        SECTION_KEY = "study_blocks"
-        COL_W = COL_STRIDE          # column pitch as card-width reference
-        CARD_H = CARD_START_DY      # vertical offset as height reference
-        BASE_X, BASE_Y = self._section_xy(SECTION_KEY)
-        BASE_Y += CARD_H + 20       # below header
-        SUB_W = max(200, COL_W // 4)  # each sub-card width
+        # Cluster layout: each block = 3 cols x 2 rows of sub-cards
+        # Blocks stacked vertically below section header
+        BASE_X, BASE_Y = self._section_xy("study_blocks")
+        BASE_Y += CARD_START_DY + 20
 
-        SUB_CARDS = [
-            # (entity_id_offset, color, label_fn, content_fn)
-            (0, "red",         lambda b: "ПРОБЛЕМА",
-             lambda b: f"{b.title}\n\n{(b.problem_text or b.title)[:120]}"),
-            (1, "light_blue",  lambda b: "ТЕМЫ",
-             lambda b: _extract_theory(b)),
-            (2, "light_green", lambda b: "ПРАКТИКА",
-             lambda b: _extract_practice(b)),
-            (3, "yellow",      lambda b: "СЛЕДУЮЩИЙ ШАГ",
-             lambda b: (b.next_action or "—")[:200]),
-        ]
-
-        def _extract_theory(block) -> str:
-            try:
-                resources = _json.loads(block.resources_json or "[]")
-                for r in resources:
-                    if isinstance(r, dict) and r.get("type") == "study_plan":
-                        plan = r.get("plan", {})
-                        if plan.get("theory"):
-                            return "ТЕМЫ:\n" + plan["theory"][:300]
-            except Exception:
-                pass
-            strat = block.solution_strategy or ""
-            if strat:
-                return strat[:200]
-            return "Темы: см. спецификацию ЕГЭ"
-
-        def _extract_practice(block) -> str:
-            try:
-                resources = _json.loads(block.resources_json or "[]")
-                for r in resources:
-                    if isinstance(r, dict) and r.get("type") == "study_plan":
-                        plan = r.get("plan", {})
-                        if plan.get("practice"):
-                            return "ПРАКТИКА:\n" + plan["practice"][:300]
-            except Exception:
-                pass
-            return "1. Решить 5 типовых заданий\n2. Разобрать ошибки\n3. Повтор через 2 дня"
+        _SLOT_COLORS = {
+            "problem":     "red",
+            "diagnostics": "light_blue",
+            "topics":      "light_blue",
+            "practice":    "light_green",
+            "control":     "yellow",
+            "next":        "orange",
+        }
+        # (col, row) in 3x2 grid
+        _SLOT_GRID = {
+            "problem":     (0, 0),
+            "diagnostics": (1, 0),
+            "topics":      (2, 0),
+            "practice":    (0, 1),
+            "control":     (1, 1),
+            "next":        (2, 1),
+        }
+        _SLOT_ENTITY_OFFSET = {
+            "problem": 0, "diagnostics": 1, "topics": 2,
+            "practice": 3, "control": 4, "next": 5,
+        }
 
         for block_i, b in enumerate(blocks[:MAX_PROBLEMS]):
-            dl = b.deadline.strftime("%d.%m.%Y") if b.deadline else "—"
+            block_base_y = BASE_Y + block_i * (CLUSTER_ROW_H * 2 + CLUSTER_GAP_Y * 2 + CLUSTER_BLOCK_GAP)
 
-            for sub_offset, color, label_fn, content_fn in SUB_CARDS:
-                try:
-                    content_text = content_fn(b)
-                except Exception:
-                    content_text = "—"
-                label_text = label_fn(b)
-                full_content = f"{label_text}\n\n{content_text}"
+            # Build plan via builder (no raw transcript)
+            try:
+                plan = build_plan(b)
+                miro_cards = plan.get("miro_cards", [])
+            except Exception:
+                logger.warning("build_plan failed for block %s, using fallback", b.id)
+                miro_cards = [
+                    {"slot": "problem",     "content": f"\u041f\u0420\u041e\u0411\u041b\u0415\u041c\u0410\n{b.title}\n\n\u0421\u043b\u0430\u0431\u043e\u0435 \u043c\u0435\u0441\u0442\u043e:\n\u043d\u0443\u0436\u043d\u0430 \u0434\u0438\u0430\u0433\u043d\u043e\u0441\u0442\u0438\u043a\u0430 \u0442\u0438\u043f\u0430 \u043e\u0448\u0438\u0431\u043a\u0438."},
+                    {"slot": "diagnostics", "content": "\u0414\u0418\u0410\u0413\u041d\u041e\u0421\u0422\u0418\u041a\u0410\n1. \u041e\u0442\u043a\u0440\u044b\u0442\u044c 3-5 \u0437\u0430\u0434\u0430\u043d\u0438\u0439 \u043f\u043e \u044d\u0442\u043e\u0439 \u0442\u0435\u043c\u0435.\n2. \u0412\u044b\u043f\u0438\u0441\u0430\u0442\u044c \u043e\u0448\u0438\u0431\u043a\u0438.\n3. \u041e\u043f\u0440\u0435\u0434\u0435\u043b\u0438\u0442\u044c: \u0442\u0435\u043e\u0440\u0438\u044f, \u0430\u043b\u0433\u043e\u0440\u0438\u0442\u043c \u0438\u043b\u0438 \u043d\u0435\u0432\u043d\u0438\u043c\u0430\u0442\u0435\u043b\u044c\u043d\u043e\u0441\u0442\u044c?"},
+                    {"slot": "topics",      "content": "\u0422\u0415\u041c\u042b\n1. \u0418\u0437\u0443\u0447\u0438\u0442\u044c \u0441\u043f\u0435\u0446\u0438\u0444\u0438\u043a\u0430\u0446\u0438\u044e \u0415\u0413\u042d.\n2. \u041f\u043e\u0432\u0442\u043e\u0440\u0438\u0442\u044c \u0442\u0435\u043e\u0440\u0435\u0442\u0438\u0447\u0435\u0441\u043a\u0443\u044e \u0431\u0430\u0437\u0443.\n3. \u041d\u0430\u0439\u0442\u0438 \u043a\u0440\u0438\u0442\u0435\u0440\u0438\u0438 \u043e\u0446\u0435\u043d\u043a\u0438."},
+                    {"slot": "practice",    "content": "\u041f\u0420\u0410\u041a\u0422\u0418\u041a\u0410\n1. \u0420\u0435\u0448\u0438\u0442\u044c 5 \u0442\u0438\u043f\u043e\u0432\u044b\u0445 \u0437\u0430\u0434\u0430\u043d\u0438\u0439.\n2. \u0420\u0430\u0437\u043e\u0431\u0440\u0430\u0442\u044c \u043e\u0448\u0438\u0431\u043a\u0438.\n3. \u041f\u043e\u0432\u0442\u043e\u0440 \u0447\u0435\u0440\u0435\u0437 2 \u0434\u043d\u044f."},
+                    {"slot": "control",     "content": "\u041a\u041e\u041d\u0422\u0420\u041e\u041b\u042c\n\u041a\u0440\u0438\u0442\u0435\u0440\u0438\u0439 \u0437\u0430\u043a\u0440\u044b\u0442\u0438\u044f:\n• \u0427\u0435\u0440\u0435\u0437 3 \u0434\u043d\u044f: \u043f\u0440\u043e\u0432\u0435\u0440\u0438\u0442\u044c \u0441\u043d\u043e\u0432\u0430.\n• \u0427\u0435\u0440\u0435\u0437 \u043d\u0435\u0434\u0435\u043b\u044e: \u043c\u0438\u043d\u0438-\u0442\u0435\u0441\u0442."},
+                    {"slot": "next",        "content": f"\u0421\u041b\u0415\u0414\u0423\u042e\u0429\u0418\u0419 \u0428\u0410\u0413\n\n\u0421\u0435\u0433\u043e\u0434\u043d\u044f:\n\u041e\u0442\u043a\u0440\u044b\u0442\u044c \u043e\u0434\u043d\u043e \u0442\u0438\u043f\u043e\u0432\u043e\u0435 \u0437\u0430\u0434\u0430\u043d\u0438\u0435 \u0438 \u0432\u044b\u043f\u0438\u0441\u0430\u0442\u044c \u0430\u043b\u0433\u043e\u0440\u0438\u0442\u043c: {b.title[:40]}"},
+                ]
 
-                # Position: each block = 4 sub-cards in row; blocks stacked vertically
-                sub_x = BASE_X + block_i * COL_W + sub_offset * SUB_W
-                sub_y = BASE_Y
+            for card in miro_cards:
+                slot = card.get("slot", "")
+                if slot not in _SLOT_GRID:
+                    continue
+                col, row = _SLOT_GRID[slot]
+                sub_x = BASE_X + col * (CLUSTER_COL_W + CLUSTER_GAP_X)
+                sub_y = block_base_y + row * (CLUSTER_ROW_H + CLUSTER_GAP_Y)
 
-                entity_id = b.id * 10 + sub_offset
-                entity_type = f"study_block_sub"
+                color = _safe_sticky_color(_SLOT_COLORS.get(slot, "light_gray"))
+                entity_id = b.id * 10 + _SLOT_ENTITY_OFFSET.get(slot, 0)
+                entity_type = "problem_block_card"
+
                 mp = await self._get_mapping(session, user_id, entity_type, entity_id)
                 new_id, _ = await self._create_or_update_sticky(
-                    mp.item_id, full_content, sub_x, sub_y, color,
-                    entity_type, entity_id, stats,
+                    mp.item_id, _safe_content(card.get("content", "—"), 500),
+                    sub_x, sub_y, color, entity_type, entity_id, stats,
                 )
                 await self._save_mapping(mp, new_id or mp.item_id, sub_x, sub_y)
                 stats["cards"] += 1
 
-    # ── Section: FUTURE (placeholders) ───────────────────────────────────────
+    # ── Legacy placeholder (kept for DB mapping compatibility) ────────────────
 
     async def _render_future_sections(self, session, user_id: int, time_service, stats: dict) -> None:
+        """Legacy stub — not called from sync_all. Kept for mapping key compatibility."""
+        pass
+
+
+    # ── Section: ПЛАН ПО ПРЕДМЕТАМ ───────────────────────────────────────────
+
+    async def _render_subject_plan_section(
+        self, session, user_id: int, time_service, stats: dict
+    ) -> None:
+        """
+        Aggregated per-subject plan card.
+        For each subject with active exam or blocks: date, blocks, next action.
+        Entity type: subject_plan, entity_id: 6000 + abs(hash(sk)) % 900.
+        """
+        from bot.services.study_problem_templates import _extract_subject_key
+
         now = time_service.now()
+        today = now.date()
         t_str = now.strftime("%H:%M")
+        await self._render_section_header(session, user_id, "subject_plan", t_str, stats)
 
-        tasks = await get_active_tasks(session, user_id)
-        blocks = await get_active_problem_blocks(session, user_id, now)
+        exams = await get_active_exam_dates(session, user_id)
+        schedule = await get_active_study_schedule(session, user_id)
+        blocks = await get_problem_blocks_by_categories(session, user_id, ["exam", "study"], now)
 
-        money_tasks = sum(1 for t in tasks if any(kw in t.title.lower() for kw in ["оплата", "деньги", "платёж"]))
-        orders_tasks = sum(1 for t in tasks if any(kw in t.title.lower() for kw in ["заказ", "клиент", "доставка"]))
-        body_tasks = sum(1 for t in tasks if any(kw in t.title.lower() for kw in ["сон", "тело", "боль", "перегруз"]))
-
-        # ── Other sections (УЧЁБА now has its own dedicated row) ─────────────
-        other_map = {
-            "money":     (money_tasks,  "ДЕНЬГИ",     "платежи и расчёты"),
-            "orders":    (orders_tasks, "ЗАКАЗЫ",     "клиенты и доставки"),
-            "body":      (body_tasks,   "ТЕЛО",       "сон и восстановление"),
-            "protocols": (0,            "ПРОТОКОЛЫ",  "сценарии поведения"),
-        }
-        for key, (n_tasks, label, focus) in other_map.items():
-            await self._render_section_header(session, user_id, key, t_str, stats)
-            x, y = self._card_xy(key, 0)
-            mp = await self._get_mapping(session, user_id, f"miro_{key}_card", _SECTION_ENTITY_IDS[f"{key}_card"])
-            content = f"{label}\n\nфокус: {focus}\nактивных задач: {n_tasks}\nактивных блоков: {len(blocks)}"
+        if not exams and not blocks:
+            x, y = self._card_xy("subject_plan", 0)
+            mp = await self._get_mapping(session, user_id, "miro_subj_plan_empty",
+                                         _SECTION_ENTITY_IDS["subject_plan_header"] + 50)
             new_id, _ = await self._create_or_update_sticky(
-                mp.item_id, content, x, y, "light_gray", f"miro_{key}_card",
-                _SECTION_ENTITY_IDS[f"{key}_card"], stats,
+                mp.item_id,
+                "План по предметам будет здесь после добавления экзаменов и блоков.",
+                x, y, "light_gray", "miro_subj_plan_empty",
+                _SECTION_ENTITY_IDS["subject_plan_header"] + 50, stats,
+            )
+            await self._save_mapping(mp, new_id or mp.item_id, x, y)
+            stats["cards"] += 1
+            return
+
+        # Build subject map
+        subject_map: dict[str, dict] = {}
+        for e in sorted(exams, key=lambda x: x.exam_date):
+            sk = _extract_subject_key(e.subject, e.subject, "")
+            if sk not in subject_map:
+                subject_map[sk] = {"subject": e.subject, "exam": e, "blocks": [], "sessions": [], "next_action": ""}
+
+        for b in blocks:
+            subject_raw = getattr(b, "subject", "") or b.title
+            sk = _extract_subject_key(subject_raw, b.title, b.problem_text or "")
+            if sk not in subject_map:
+                subject_map[sk] = {"subject": subject_raw, "exam": None, "blocks": [], "sessions": [], "next_action": ""}
+            subject_map[sk]["blocks"].append(b)
+            if b.next_action and not subject_map[sk]["next_action"]:
+                subject_map[sk]["next_action"] = b.next_action[:100]
+
+        for s in schedule:
+            sk = _extract_subject_key(s.subject or "", s.subject or "", "")
+            if sk in subject_map:
+                subject_map[sk]["sessions"].append(s)
+
+        _WDAY = {"mon": "Пн", "tue": "Вт", "wed": "Ср", "thu": "Чт",
+                 "fri": "Пт", "sat": "Сб", "sun": "Вс"}
+
+        for card_i, (sk, info) in enumerate(subject_map.items()):
+            lines = [f"ПЛАН\n{info['subject']}\n"]
+            if info["exam"]:
+                e = info["exam"]
+                days_left = (e.exam_date - today).days
+                if days_left >= 0:
+                    lines.append(f"• экзамен: {e.exam_date.strftime('%d.%m')} ({days_left} дн.)")
+                else:
+                    lines.append(f"• экзамен: {e.exam_date.strftime('%d.%m')} (прошёл)")
+            if info["blocks"]:
+                block_titles = ", ".join(b.title[:35] for b in info["blocks"][:3])
+                lines.append(f"• блоки: {block_titles}")
+            if info["sessions"]:
+                sess_strs = []
+                for s in info["sessions"][:2]:
+                    wd = _WDAY.get(s.weekday or "", s.weekday or "")
+                    sess_strs.append(f"{wd} {s.time_str or ''}")
+                lines.append(f"• занятия: {', '.join(sess_strs)}")
+            if info["next_action"]:
+                lines.append(f"• действие: {info['next_action']}")
+            elif info["blocks"]:
+                lines.append("• действие: отработать слабые места.")
+
+            content = "\n".join(lines)
+            entity_id = 6000 + (abs(hash(sk)) % 900)
+            entity_type = "subject_plan"
+
+            x, y = self._card_xy("subject_plan", card_i)
+            mp = await self._get_mapping(session, user_id, entity_type, entity_id)
+            new_id, _ = await self._create_or_update_sticky(
+                mp.item_id, _safe_content(content, 500),
+                x, y, "violet", entity_type, entity_id, stats,
             )
             await self._save_mapping(mp, new_id or mp.item_id, x, y)
             stats["cards"] += 1
 
+    # ── Section: СЛЕДУЮЩИЕ 72 ЧАСА ────────────────────────────────────────────
+
+    async def _render_next_72h_section(
+        self, session, user_id: int, time_service, stats: dict
+    ) -> None:
+        """
+        Next 72 hours summary: upcoming sessions, urgent exams, due review blocks, reminders.
+        Single card (stable entity_id = next_72h_card). Always PATCHed, never duplicated.
+        """
+        from datetime import timedelta
+
+        now = time_service.now()
+        today = now.date()
+        t_str = now.strftime("%H:%M")
+        await self._render_section_header(session, user_id, "next_72h", t_str, stats)
+
+        horizon = now + timedelta(hours=72)
+
+        schedule = await get_active_study_schedule(session, user_id)
+        exams = await get_active_exam_dates(session, user_id)
+        blocks = await get_problem_blocks_by_categories(session, user_id, ["exam", "study"], now)
+        reminders = await get_active_reminders(session, user_id)
+
+        lines = ["СЛЕДУЮЩИЕ 72 ЧАСА\n"]
+
+        # 1. Upcoming study sessions (next 3 days by weekday)
+        _WDAY_STR = {"mon": "Пн", "tue": "Вт", "wed": "Ср", "thu": "Чт",
+                     "fri": "Пт", "sat": "Сб", "sun": "Вс"}
+        _WDAY_IDX = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6}
+        today_wd = today.weekday()  # 0 = Monday
+        upcoming_sessions = []
+        for s in schedule:
+            wd_idx = _WDAY_IDX.get(s.weekday or "", -1)
+            if wd_idx < 0:
+                continue
+            days_until = (wd_idx - today_wd) % 7
+            if days_until <= 3:
+                upcoming_sessions.append((days_until, s))
+        upcoming_sessions.sort(key=lambda x: x[0])
+        if upcoming_sessions:
+            lines.append("Занятия:")
+            for delta_days, s in upcoming_sessions[:4]:
+                wd_str = _WDAY_STR.get(s.weekday or "", s.weekday or "")
+                tutor = f" — {s.tutor_name}" if s.tutor_name else ""
+                lines.append(f"  {wd_str} {s.time_str or ''} {s.subject}{tutor}")
+
+        # 2. Urgent exams ≤14 days
+        urgent_exams = [e for e in exams if 0 <= (e.exam_date - today).days <= 14]
+        if urgent_exams:
+            lines.append("\nЭкзамены:")
+            for e in sorted(urgent_exams, key=lambda x: x.exam_date):
+                days_left = (e.exam_date - today).days
+                lines.append(f"  {e.subject}: {days_left} дн. до экзамена")
+
+        # 3. Problem blocks due for review
+        due_blocks = [b for b in blocks if b.next_review_at and b.next_review_at <= horizon]
+        if due_blocks:
+            lines.append("\nБлоки:")
+            for b in sorted(due_blocks, key=lambda x: x.next_review_at)[:3]:
+                lines.append(f"  {b.title[:50]} — повторить")
+
+        # 4. Upcoming reminders
+        due_reminders = [r for r in reminders if r.remind_at <= horizon]
+        if due_reminders:
+            lines.append("\nНапоминания:")
+            for r in sorted(due_reminders, key=lambda x: x.remind_at)[:3]:
+                lines.append(f"  {r.remind_at.strftime('%d.%m %H:%M')} — {r.text[:40]}")
+
+        if len(lines) <= 1:
+            lines.append("Ближайших событий нет.")
+
+        content = "\n".join(lines)
+        x, y = self._card_xy("next_72h", 0)
+        mp = await self._get_mapping(session, user_id, "miro_next72h_card", _SECTION_ENTITY_IDS["next_72h_card"])
+        new_id, _ = await self._create_or_update_sticky(
+            mp.item_id, _safe_content(content, 800),
+            x, y, "light_blue", "miro_next72h_card", _SECTION_ENTITY_IDS["next_72h_card"], stats,
+        )
+        await self._save_mapping(mp, new_id or mp.item_id, x, y)
+        stats["cards"] += 1
+
     # ── Public: sync_all ──────────────────────────────────────────────────────
+
 
     async def sync_all(self, user_id: int, session, time_service, cfg, next_step_service=None) -> dict:
         stats = {"sections": 0, "cards": 0, "created": 0, "updated": 0, "errors": 0,
@@ -991,14 +1205,16 @@ class MiroService:
             self._render_checkins_section(session, user_id, time_service, cfg, stats))
         await _safe_section("archive",
             self._render_archive_section(session, user_id, time_service, stats))
-        await _safe_section("future",
-            self._render_future_sections(session, user_id, time_service, stats))
         await _safe_section("exams",
             self._render_exams_section(session, user_id, time_service, stats))
         await _safe_section("study_schedule",
             self._render_study_schedule_section(session, user_id, time_service, stats))
         await _safe_section("study_blocks",
             self._render_study_blocks_section(session, user_id, time_service, stats))
+        await _safe_section("subject_plan",
+            self._render_subject_plan_section(session, user_id, time_service, stats))
+        await _safe_section("next_72h",
+            self._render_next_72h_section(session, user_id, time_service, stats))
 
         stats["failed_sections"] = failed_sections
         return stats

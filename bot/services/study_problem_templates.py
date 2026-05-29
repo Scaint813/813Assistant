@@ -245,7 +245,7 @@ def build_study_problem_plan(subject: str, title: str, problem_text: str) -> dic
 
     miro_plan = {
         "header": header,
-        "problem": problem_text[:200] if problem_text else title,
+        "problem": title,  # Never raw transcript — use block.title only; full safe summary built by StudyProblemPlanBuilder
         "theory": theory_text,
         "practice": practice_text,
         "control": control_text,

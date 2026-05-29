@@ -331,13 +331,20 @@ async def settings_miro(callback: CallbackQuery, miro_service, config):
         board_display = "не задан"
         status = "не настроен"
         zone = "—"
+
+    zone_warning = ""
+    if miro_service.is_configured() and config.miro_ai_zone_start_x < 6000:
+        zone_warning = "\n\n⚠ AI-зона близко к ручной зоне.\nРекомендуется: X=12000, Y=3000\n(.env → MIRO_AI_ZONE_START_X)"
+
     text = (
         "MIRO\n\n"
         f"Статус: {status}\n"
         f"Board: {board_display}\n"
         f"AI-зона: {zone}"
+        f"{zone_warning}"
     )
     await callback.message.edit_text(text, reply_markup=_miro_kb(miro_service.is_configured()))
+
 
 
 @router.callback_query(F.data == "do_sync_miro")

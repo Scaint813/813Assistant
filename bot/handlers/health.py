@@ -170,8 +170,14 @@ async def miro_debug_cmd(message: Message, miro_service, config, screen_service)
         "",
         f"Board: {board_display}",
         f"AI-зона: X={config.miro_ai_zone_start_x}, Y={config.miro_ai_zone_start_y}",
-        "",
     ]
+
+    # Warn if AI zone is too close to user's manual area
+    if config.miro_ai_zone_start_x < 6000:
+        lines.append("")
+        lines.append("⚠ AI-зона близко к ручной зоне пользователя.")
+        lines.append("Рекомендуется: MIRO_AI_ZONE_START_X=12000, Y=3000")
+    lines.append("")
 
     # GET /v2/boards/{id}/items?limit=1
     get_result = await miro_service.debug_get_items()
@@ -200,10 +206,58 @@ async def miro_debug_cmd(message: Message, miro_service, config, screen_service)
         "",
         "/miro_debug только проверяет API-соединение.",
         "Для отрисовки штаба используй /sync_miro.",
+        "Превью удаления bot-элементов: /miro_clear_bot_zone_preview",
         "",
         "Логи: journalctl -u 813assistant -n 120 --no-pager",
     ]
     await message.answer("\n".join(lines))
+    await screen_service.delete_user_input(message)
+
+
+@router.message(Command("miro_clear_bot_zone_preview"))
+async def miro_clear_bot_zone_preview_cmd(message: Message, session_factory, config, screen_service):
+    """
+    Preview of bot-created Miro items (from miro_mappings table).
+    Shows count and offers [Delete] / [Cancel] inline buttons.
+    Only deletes items from miro_mappings (bot-created), never user-manual elements.
+    """
+    if message.from_user.id != config.allowed_user_id:
+        return
+
+    from sqlalchemy import select
+    from bot.database.models import MiroMapping
+    from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+
+    try:
+        async with session_factory() as session:
+            res = await session.execute(
+                select(MiroMapping).where(MiroMapping.user_id == message.from_user.id)
+            )
+            mappings = list(res.scalars().all())
+            await session.commit()
+    except Exception as exc:
+        logger.exception("miro_clear_preview DB error: %s", exc)
+        await message.answer("DB ошибка при чтении miro_mappings.")
+        await screen_service.delete_user_input(message)
+        return
+
+    count_with_id = sum(1 for m in mappings if m.item_id)
+    count_total = len(mappings)
+
+    text = (
+        "MIRO / ОЧИСТКА BOT-ЗОНЫ\n\n"
+        f"Маппингов в DB: {count_total}\n"
+        f"С item_id (есть в Miro): {count_with_id}\n\n"
+        "Удалить только bot-created элементы.\n"
+        "Ручные элементы пользователя не трогаются."
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text=f"Удалить bot-зону ({count_with_id} эл.)", callback_data="miro_clear_confirm"),
+            InlineKeyboardButton(text="Отмена", callback_data="miro_clear_cancel"),
+        ]
+    ])
+    await message.answer(text, reply_markup=kb)
     await screen_service.delete_user_input(message)
 
 
