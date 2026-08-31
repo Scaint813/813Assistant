@@ -7,3 +7,7 @@ __pycache__/
 *.db-wal
 .venv/
 venv/
+backups/
+.ruff_cache/
+_patch*.py
+_verify*.py

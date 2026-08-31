@@ -87,6 +87,45 @@ class ScreenService:
         """Explicitly delete the last screen and clear stored ids."""
         await self._delete_old_screen(bot, session, user_id)
 
+    async def cleanup_recent_chat(
+        self,
+        bot: Bot,
+        chat_id: int,
+        through_message_id: int,
+        *,
+        history_window: int = 100,
+    ) -> None:
+        """Delete a confirmed recent private-chat window in Bot API batches.
+
+        Telegram does not expose chat history to bots and only permits deletion
+        for messages younger than 48 hours.  The current message id gives us a
+        safe bounded range; missing or already-expired ids are skipped by the
+        batch endpoint.
+        """
+        first_id = max(1, through_message_id - max(1, history_window) + 1)
+        message_ids = list(range(first_id, through_message_id + 1))
+        for offset in range(0, len(message_ids), 100):
+            batch = message_ids[offset:offset + 100]
+            try:
+                await bot.delete_messages(chat_id=chat_id, message_ids=batch)
+            except TelegramBadRequest as exc:
+                logger.debug(
+                    "cleanup_recent_chat batch %s..%s failed, trying messages: %s",
+                    batch[0], batch[-1], exc,
+                )
+                # One expired/service message can make Telegram reject the whole
+                # batch.  Isolate it so the rest of the recent screen clutter is
+                # still removed.  The window is deliberately capped to keep this
+                # explicit action rate-limit friendly.
+                for message_id in batch:
+                    try:
+                        await bot.delete_message(
+                            chat_id=chat_id,
+                            message_id=message_id,
+                        )
+                    except TelegramBadRequest:
+                        continue
+
     # ── private ───────────────────────────────────────────────────────────
 
     async def _delete_old_screen(self, bot: Bot, session, user_id: int):

@@ -106,7 +106,7 @@ def subjects_are_same(a: str, b: str) -> bool:
     return canonical_key(normalize_subject(a)) == canonical_key(normalize_subject(b))
 
 
-def find_best_exam_match(exams: list, raw_subject: str) -> "ExamDate | None":
+def find_best_exam_match(exams: list, raw_subject: str) -> ExamDate | None:
     """
     Find the best matching ExamDate from a list for a given raw subject string.
 

@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import logging
 import tempfile
+from html import escape
 from pathlib import Path
+from time import perf_counter
 
 from aiogram import F, Router
 from aiogram.types import Message
 
-from bot.database.queries import create_pending_preview, get_active_tasks, get_reminders_for_date, get_upcoming_overrides
+from bot.database.queries import create_pending_preview
 from bot.keyboards.inline import confirm_keyboard
 from bot.services.action_preview import render_preview
 
@@ -16,7 +18,19 @@ router = Router()
 
 
 @router.message(F.voice)
-async def capture_voice(message: Message, bot, transcription_service, intent_parser, session_factory, time_service, screen_service):
+async def capture_voice(
+    message: Message,
+    bot,
+    transcription_service,
+    intent_parser,
+    session_factory,
+    time_service,
+    screen_service,
+    assistant_ux_service,
+    conversation_service=None,
+    metric_service=None,
+    conversation_repair_service=None,
+):
     if not transcription_service.api_key:
         await message.answer("Транскрибация не настроена: отсутствует OPENAI_API_KEY.")
         # Do NOT delete — user should know their voice wasn't understood
@@ -28,8 +42,8 @@ async def capture_voice(message: Message, bot, transcription_service, intent_par
         with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as tmp:
             temp_path = Path(tmp.name)
         await bot.download_file(file.file_path, str(temp_path))
-    except Exception as exc:
-        logger.exception("Voice download failed: %s", exc)
+    except Exception:
+        logger.exception("Voice download failed")
         if temp_path and temp_path.exists():
             temp_path.unlink(missing_ok=True)
         await message.answer("Не смог скачать голосовое. Попробуй ещё раз.")
@@ -47,42 +61,117 @@ async def capture_voice(message: Message, bot, transcription_service, intent_par
     if not transcript.strip():
         await message.answer("Не смог разобрать голосовое. Попробуй ещё раз или напиши текстом.")
         return
+    safe_transcript = escape(transcript.strip())
+    repair_resolved = False
+    parse_text = transcript
+    if conversation_repair_service:
+        async with session_factory() as session:
+            parse_text, repair_resolved = await conversation_repair_service.merge_followup(
+                session, message.from_user.id, transcript, time_service.now()
+            )
+            await session.commit()
 
+    parse_started = perf_counter()
     parsed = await intent_parser.parse_user_text(
-        transcript,
+        parse_text,
         context={"session_factory": session_factory, "user_id": message.from_user.id},
     )
+    quality = dict(parsed.get("quality") or {})
+    quality.update({
+        "source": "voice",
+        "intent_count": len(parsed.get("intents") or []),
+        "latency_ms": round((perf_counter() - parse_started) * 1000),
+        "transcript_chars": len(transcript.strip()),
+    })
+    if metric_service:
+        async with session_factory() as session:
+            await metric_service.record(
+                session, message.from_user.id, "intent_parsed",
+                usage=parsed.get("usage"), metadata=quality,
+            )
+            if parsed.get("clarification"):
+                if parsed.get("repair") and conversation_repair_service:
+                    await conversation_repair_service.remember(
+                        session,
+                        message.from_user.id,
+                        parsed["repair"],
+                        time_service.now(),
+                    )
+                await metric_service.record(
+                    session,
+                    message.from_user.id,
+                    "clarification_requested",
+                    metadata=quality,
+                )
+            elif repair_resolved:
+                await metric_service.record(
+                    session,
+                    message.from_user.id,
+                    "clarification_resolved",
+                    metadata=quality,
+                )
+            await session.commit()
+    if parsed.get("clarification"):
+        await message.answer(
+            f"Расшифровал так:\n«{safe_transcript}»\n\n"
+            f"{escape(str(parsed['clarification']))}"
+        )
+        await screen_service.delete_user_input(message)
+        return
     first_intent = (parsed.get("intents") or [{}])[0].get("type")
+    intents = parsed.get("intents") or []
+    timezone = parsed.get("user_timezone") or time_service.now().tzinfo
+    user_clock = (
+        time_service.in_timezone(timezone)
+        if hasattr(time_service, "in_timezone")
+        else time_service
+    )
 
     if first_intent == "do_nothing":
-        await message.answer(f"Расшифровка:\n\"{transcript}\"\n\nПонял, ничего не записываю.")
+        await message.answer(
+            f"Расшифровал так:\n«{safe_transcript}»\n\nПонял, ничего не записываю."
+        )
         await screen_service.delete_user_input(message)
         return
 
-    if first_intent == "show_today":
-        from datetime import datetime, timedelta
-        now = time_service.now()
-        day_start = datetime.combine(now.date(), datetime.min.time(), tzinfo=now.tzinfo)
-        day_end = day_start + timedelta(days=1)
+    if conversation_service and len(intents) == 1 and first_intent in conversation_service.QUERY_TYPES:
         async with session_factory() as session:
-            tasks = await get_active_tasks(session, message.from_user.id)
-            reminders = await get_reminders_for_date(session, message.from_user.id, day_start, day_end)
-            overrides = await get_upcoming_overrides(session, message.from_user.id, now.date())
-        text = [f"Сегодня: {now.strftime('%Y-%m-%d %A')}", "", "Задачи:"]
-        text.extend([f"- {t.title}" for t in tasks[:20]] or ["- нет"])
-        text.append("\nНапоминания:")
-        text.extend([f"- {r.remind_at.strftime('%H:%M')} {r.text}" for r in reminders] or ["- нет"])
-        text.append("\nOverrides:")
-        text.extend([f"- {o.date} {o.mode}" for o in overrides[:5]] or ["- нет"])
-        await message.answer("Расшифровка:\n" + transcript + "\n\n" + "\n".join(text))
+            reply = await conversation_service.answer(
+                session, message.from_user.id, first_intent, user_clock.now()
+            )
+            can_render_screen = (
+                hasattr(screen_service, "render_screen")
+                and getattr(message, "chat", None) is not None
+            )
+            if can_render_screen:
+                await screen_service.render_screen(
+                    bot=bot,
+                    session=session,
+                    user_id=message.from_user.id,
+                    chat_id=message.chat.id,
+                    text=f"Расшифровал так:\n«{safe_transcript}»\n\n{reply.text}",
+                    reply_markup=reply.reply_markup,
+                )
+            await session.commit()
+        if not can_render_screen:
+            await message.answer(
+                f"Расшифровал так:\n«{safe_transcript}»\n\n{reply.text}",
+                reply_markup=reply.reply_markup,
+            )
         await screen_service.delete_user_input(message)
         return
 
-    if first_intent == "show_tasks":
+    # Compatibility for isolated callers/tests that do not provide the new
+    # conversation router yet.
+    if first_intent in {"show_today", "show_tasks"}:
         async with session_factory() as session:
-            tasks = await get_active_tasks(session, message.from_user.id)
-        body = "\n".join([f"- {t.title} [{t.priority}]" for t in tasks[:20]]) if tasks else "- нет"
-        await message.answer(f"Расшифровка:\n\"{transcript}\"\n\nАктивные задачи:\n{body}")
+            screen = (
+                await assistant_ux_service.today(session, message.from_user.id, user_clock.now())
+                if first_intent == "show_today"
+                else await assistant_ux_service.tasks(session, message.from_user.id, user_clock.now())
+            )
+            await session.commit()
+        await message.answer(f"Расшифровал так:\n«{safe_transcript}»\n\n{screen.text}")
         await screen_service.delete_user_input(message)
         return
 
@@ -90,14 +179,19 @@ async def capture_voice(message: Message, bot, transcription_service, intent_par
     # Voice file is already downloaded and transcript is read — safe to delete
     async with session_factory() as session:
         preview = await create_pending_preview(
-            session, message.from_user.id, "voice", transcript, transcript, parsed
+            session, message.from_user.id, "voice", parse_text, transcript, parsed
         )
+        if metric_service:
+            await metric_service.record(
+                session, message.from_user.id, "preview_created",
+                entity_type="preview", entity_id=preview.id,
+            )
         await session.commit()
 
     # Show transcript in preview so user sees what was understood
     preview_text = (
-        f"ПРОВЕРКА\n\nРасшифровка:\n\"{transcript}\"\n\n"
-        + render_preview(parsed)
+        f"Расшифровал так:\n«{safe_transcript}»\n\n"
+        f"{escape(render_preview(parsed))}"
     )
-    await message.answer(preview_text, reply_markup=confirm_keyboard(preview.id))
+    await message.answer(preview_text, reply_markup=confirm_keyboard(preview.id, parsed))
     await screen_service.delete_user_input(message)

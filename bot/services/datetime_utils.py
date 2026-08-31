@@ -7,11 +7,10 @@ Use these helpers before ANY datetime comparison to avoid:
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from typing import Optional
+from datetime import UTC, datetime
 
 
-def ensure_aware(dt: Optional[datetime], tz=None) -> Optional[datetime]:
+def ensure_aware(dt: datetime | None, tz=None) -> datetime | None:
     """
     Make a datetime timezone-aware.
 
@@ -28,39 +27,39 @@ def ensure_aware(dt: Optional[datetime], tz=None) -> Optional[datetime]:
     if dt is None:
         return None
     if tz is None:
-        tz = timezone.utc
+        tz = UTC
     if dt.tzinfo is None:
         return dt.replace(tzinfo=tz)
     return dt.astimezone(tz)
 
 
-def ensure_utc_aware(dt: Optional[datetime]) -> Optional[datetime]:
+def ensure_utc_aware(dt: datetime | None) -> datetime | None:
     """Convenience wrapper: make dt UTC-aware. Returns None if dt is None."""
-    return ensure_aware(dt, timezone.utc)
+    return ensure_aware(dt, UTC)
 
 
-def safe_lt(a: Optional[datetime], b: Optional[datetime], tz=None) -> bool:
+def safe_lt(a: datetime | None, b: datetime | None, tz=None) -> bool:
     """Return a < b safely (False if either is None)."""
     if a is None or b is None:
         return False
     return ensure_aware(a, tz) < ensure_aware(b, tz)
 
 
-def safe_lte(a: Optional[datetime], b: Optional[datetime], tz=None) -> bool:
+def safe_lte(a: datetime | None, b: datetime | None, tz=None) -> bool:
     """Return a <= b safely (False if either is None)."""
     if a is None or b is None:
         return False
     return ensure_aware(a, tz) <= ensure_aware(b, tz)
 
 
-def safe_gt(a: Optional[datetime], b: Optional[datetime], tz=None) -> bool:
+def safe_gt(a: datetime | None, b: datetime | None, tz=None) -> bool:
     """Return a > b safely (False if either is None)."""
     if a is None or b is None:
         return False
     return ensure_aware(a, tz) > ensure_aware(b, tz)
 
 
-def safe_gte(a: Optional[datetime], b: Optional[datetime], tz=None) -> bool:
+def safe_gte(a: datetime | None, b: datetime | None, tz=None) -> bool:
     """Return a >= b safely (False if either is None)."""
     if a is None or b is None:
         return False

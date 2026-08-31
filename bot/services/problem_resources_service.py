@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from typing import ClassVar
+
 
 class ProblemResourcesService:
-    RESOURCE_MAP = {
+    RESOURCE_MAP: ClassVar[dict[str, list[dict[str, str]]]] = {
         "exam": [
             {"title": "Шаблон проверки плана", "note": "Каждый подпункт раскрывает аспект темы"},
             {"title": "Чеклист ошибок №24", "note": "Убрать общие формулировки и повторы"},

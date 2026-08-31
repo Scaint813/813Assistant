@@ -1,0 +1,16 @@
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+exclude = [".venv", "backups"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC", "RUF"]
+ignore = [
+  "E501",   # formatting is handled separately; many messages are intentionally long
+  "RUF001", # Russian user-facing text is expected, not an ambiguous Unicode typo
+  "RUF002",
+  "RUF003",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["S101", "ASYNC230", "ASYNC240"]

@@ -19,13 +19,43 @@ def render_preview(parsed: dict) -> str:
     problems       = [i for i in intents if i.get("type") == "create_problem_block"]
     tasks          = [i for i in intents if i.get("type") == "create_task"]
     reminders      = [i for i in intents if i.get("type") == "create_reminder"]
+    plans          = [i for i in intents if i.get("type") == "decompose_project"]
     update_exams   = [i for i in intents if i.get("type") == "update_exam_date"]
     delete_exams   = [i for i in intents if i.get("type") == "delete_exam_date"]
     delete_sched   = [i for i in intents if i.get("type") == "delete_study_schedule_item"]
+    task_changes   = [i for i in intents if i.get("type") in {"update_task", "complete_task", "archive_task"}]
+    reminder_changes = [i for i in intents if i.get("type") in {"update_reminder", "cancel_reminder"}]
+
+    if task_changes or reminder_changes:
+        return _render_natural_changes(task_changes, reminder_changes)
 
     # Edit operations take priority
     if update_exams or delete_exams or delete_sched:
         return _render_edit_package(update_exams, delete_exams, delete_sched, exams, problems)
+
+    if plans:
+        plan = plans[0]
+        lines = [
+            "Проверка плана",
+            "",
+            f"Проект: {plan.get('project') or 'Без названия'}",
+            f"Результат: {plan.get('objective') or '—'}",
+            "",
+            "Шаги:",
+        ]
+        for index, step in enumerate(plan.get("steps") or [], 1):
+            lines.append(f"{index}. {step.get('title')}")
+            action = step.get("next_action") or step.get("title")
+            if action and action.casefold() != (step.get("title") or "").casefold():
+                lines.append(f"   Начать с: {action}")
+            if step.get("dependencies"):
+                lines.append(f"   Зависит от: {', '.join(step['dependencies'])}")
+        lines += ["", "Сохранить эти задачи?"]
+        return "\n".join(lines)
+
+    general_actions = tasks + reminders
+    if len(general_actions) > 1:
+        return _render_action_batch(tasks, reminders)
 
     # Study create package
     if exams or (schedule and not tasks) or (problems and _is_study_context(problems)):
@@ -36,41 +66,144 @@ def render_preview(parsed: dict) -> str:
     t = first.get("type")
 
     if t == "create_reminder":
-        when = datetime.fromisoformat(first["remind_at"]).strftime("%Y-%m-%d %H:%M")
+        remind_at = datetime.fromisoformat(first["remind_at"])
+        when = remind_at.strftime("%d.%m.%Y %H:%M")
+        timezone = first.get("timezone") or _offset_label(remind_at)
+        recurrence = {
+            "daily": "каждый день",
+            "weekdays": "по будням",
+            "weekly": "раз в неделю",
+            "monthly": "раз в месяц",
+        }.get(first.get("recurrence"), "нет")
         return (
-            "Я понял так:\n\n"
-            f"1. Создать напоминание:\n{first.get('text', '')}\n"
-            f"Время: {when}\n\n"
-            "Подтвердить?"
+            "Проверка напоминания\n\n"
+            f"Что: {first.get('text', '')}\n"
+            f"Когда: {when}\n"
+            f"Часовой пояс: {timezone}\n"
+            f"Повтор: {recurrence}\n\n"
+            "Сохранить?"
         )
 
     if t in {"schedule_override", "rest_day"}:
         return (
-            "Я понял так:\n\n"
-            "1. Поставить день отдыха.\n"
-            "2. Не создавать тренировочные задачи.\n"
-            "3. Ничего не добавлять в Miro.\n\n"
-            "Подтвердить?"
+            "Проверка режима дня\n\n"
+            "Режим: день отдыха.\n"
+            "Тренировки не планировать.\n"
+            "Оставить только действительно срочные дела.\n\n"
+            "Сохранить?"
         )
 
     if t == "create_problem_block":
         return (
-            "СИТУАЦИЯ\n"
-            f"Проблема: {first.get('problem_text') or first.get('title')}\n\n"
-            "ВЫВОД\nНужен активный блок с коротким решением.\n\n"
-            "ДЕЙСТВИЕ\n"
-            "1. Создать активный блок решения.\n"
-            f"2. Следующий шаг: {first.get('next_action')}\n"
-            "3. Добавить блок в /next.\n\n"
-            "Подтвердить?"
+            "Проверка проблемы\n\n"
+            f"Что мешает: {first.get('problem_text') or first.get('title')}\n"
+            f"Первый конкретный шаг: {first.get('next_action') or 'уточнить вместе'}\n\n"
+            "Сохранить как активную проблему?"
         )
 
     title = first.get("title") or ""
-    return f"Я понял так:\n\n1. Создать задачу:\n{title}\n\nПодтвердить?"
+    lines = ["Сохранить задачу?", "", title]
+    action = (first.get("next_action") or "").strip()
+    if action and action.casefold() != title.casefold():
+        lines += ["", f"Начать с: {action}"]
+    if first.get("deadline"):
+        try:
+            deadline = datetime.fromisoformat(first["deadline"]).strftime("%d.%m.%Y %H:%M")
+        except (TypeError, ValueError):
+            deadline = str(first["deadline"])
+        lines.append(f"Срок: {deadline}")
+    if first.get("project"):
+        lines.append(f"Проект: {first['project']}")
+    if first.get("planning_state") == "inbox":
+        missing = []
+        if not first.get("duration_confirmed"):
+            missing.append("длительность")
+        if not first.get("deadline_confirmed"):
+            missing.append("срок")
+        lines += [
+            "",
+            "После сохранения: Входящие.",
+            f"Для плана нужно уточнить: {', '.join(missing)}.",
+        ]
+    else:
+        lines += ["", f"Оценка времени: {first.get('estimated_minutes', 30)} мин."]
+    return "\n".join(lines)
+
+
+def _render_action_batch(tasks: list[dict], reminders: list[dict]) -> str:
+    lines = [f"Проверка · {len(tasks) + len(reminders)} действия", ""]
+    if tasks:
+        lines.append("Задачи:")
+        for index, task in enumerate(tasks, 1):
+            suffixes = []
+            if task.get("deadline"):
+                try:
+                    suffixes.append(datetime.fromisoformat(task["deadline"]).strftime("до %d.%m %H:%M"))
+                except (TypeError, ValueError):
+                    pass
+            if task.get("duration_confirmed"):
+                suffixes.append(f"{task.get('estimated_minutes')} мин")
+            suffix = f" · {' · '.join(suffixes)}" if suffixes else " · во Входящие"
+            lines.append(f"{index}. {task.get('title') or 'Без названия'}{suffix}")
+        lines.append("")
+    if reminders:
+        lines.append("Напоминания:")
+        for index, reminder in enumerate(reminders, 1):
+            remind_at = datetime.fromisoformat(reminder["remind_at"])
+            when = remind_at.strftime("%d.%m в %H:%M")
+            timezone = reminder.get("timezone") or _offset_label(remind_at)
+            lines.append(
+                f"{index}. {reminder.get('text') or 'Без текста'} · {when} · {timezone}"
+            )
+        lines.append("")
+    lines.append("Сохранить всё одним действием?")
+    return "\n".join(lines)
+
+
+def _render_natural_changes(task_changes: list[dict], reminder_changes: list[dict]) -> str:
+    lines = ["Проверка изменений", ""]
+    for item in task_changes:
+        title = item.get("current_title") or item.get("target_title") or "задача"
+        operation = item.get("type")
+        if operation == "complete_task":
+            lines.append(f"Завершить задачу: {title}")
+        elif operation == "archive_task":
+            lines.append(f"Убрать задачу в архив: {title}")
+        else:
+            lines.append(f"Изменить задачу: {title}")
+            if item.get("new_title"):
+                lines.append(f"Новое название: {item['new_title']}")
+            if item.get("deadline"):
+                lines.append(f"Новый срок: {datetime.fromisoformat(item['deadline']).strftime('%d.%m.%Y %H:%M')}")
+            if item.get("duration_confirmed"):
+                lines.append(f"Длительность: {item['estimated_minutes']} мин")
+            if item.get("next_action"):
+                lines.append(f"Начать с: {item['next_action']}")
+    for item in reminder_changes:
+        text = item.get("current_text") or item.get("target_text") or "напоминание"
+        if item.get("type") == "cancel_reminder":
+            lines.append(f"Отменить напоминание: {text}")
+        else:
+            lines.append(f"Изменить напоминание: {text}")
+            if item.get("new_text"):
+                lines.append(f"Новый текст: {item['new_text']}")
+            if item.get("remind_at"):
+                remind_at = datetime.fromisoformat(item["remind_at"])
+                timezone = item.get("timezone") or _offset_label(remind_at)
+                lines.append(
+                    f"Новое время: {remind_at.strftime('%d.%m.%Y %H:%M')} · {timezone}"
+                )
+    lines += ["", "Применить?"]
+    return "\n".join(lines)
 
 
 def _is_study_context(problem_blocks: list) -> bool:
     return any(p.get("category") in {"exam", "study"} for p in problem_blocks)
+
+
+def _offset_label(value: datetime) -> str:
+    offset = value.strftime("%z")
+    return f"UTC{offset[:3]}:{offset[3:]}" if offset else "UTC"
 
 
 _WEEKDAY_RU = {

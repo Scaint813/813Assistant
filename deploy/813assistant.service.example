@@ -4,11 +4,12 @@ After=network.target
 
 [Service]
 Type=simple
-WorkingDirectory=/opt/bot/813Assistant
-ExecStart=/opt/bot/813Assistant/.venv/bin/python -m bot.main
+WorkingDirectory=/opt/bot/813Assistant-current
+ExecStart=/opt/bot/813Assistant-current/.venv/bin/python -m bot.main
 Restart=always
 RestartSec=5
 Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
 StandardOutput=journal
 StandardError=journal
 

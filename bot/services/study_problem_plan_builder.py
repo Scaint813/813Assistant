@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """
 StudyProblemPlanBuilder — строит структурированный учебный план для Miro.
 
@@ -12,9 +10,9 @@ StudyProblemPlanBuilder — строит структурированный уч
 Функция build_plan(block, exam_dates=None, study_schedule=None) -> dict
 """
 
-import re
-from datetime import date as _date, datetime
-from typing import Any
+from __future__ import annotations
+
+from datetime import datetime
 
 from bot.services.study_problem_templates import (
     _extract_subject_key,
@@ -223,8 +221,6 @@ def build_plan(
     title = (block.title or "Активный блок").strip()
     problem_text = (block.problem_text or "").strip()
     subject_raw = getattr(block, "subject", "") or ""
-    solution_strategy = (block.solution_strategy or "").strip()
-
     subject_key = _extract_subject_key(subject_raw, title, problem_text)
     task_num = _extract_task_num(title, problem_text)
 
@@ -265,8 +261,8 @@ def build_plan(
             if isinstance(dl, datetime):
                 dl = dl.date()
             deadline_str = dl.strftime("%d.%m")
-        except Exception:
-            pass
+        except (AttributeError, TypeError, ValueError):
+            deadline_str = str(block.deadline)[:10]
 
     # Safe problem summary
     problem_summary = _safe_problem_summary(block)

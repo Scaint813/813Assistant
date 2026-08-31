@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
 
 from aiogram import Router
 from aiogram.filters import Command
 from aiogram.types import Message
 
 from bot.database.queries import (
+    find_duplicate_exams,
     get_active_problem_blocks,
     get_active_reminders,
     get_active_tasks,
@@ -16,17 +16,15 @@ from bot.database.queries import (
     get_archived_tasks,
     get_or_create_runtime_state,
     get_upcoming_overrides,
-    find_duplicate_exams,
-    archive_exam_date,
-    get_exam_date_by_id,
 )
+from bot.services.datetime_utils import ensure_aware
 
 logger = logging.getLogger(__name__)
 router = Router()
 
 
 @router.message(Command("health"))
-async def health_cmd(message: Message, session_factory, time_service, miro_service, reminder_scheduler, config, checkin_service, screen_service):
+async def health_cmd(message: Message, session_factory, time_service, miro_service, reminder_scheduler, config, checkin_service, health_service, screen_service):
     """Quick smoke-test. Safe: never shows tokens."""
     now = time_service.now()
 
@@ -61,11 +59,14 @@ async def health_cmd(message: Message, session_factory, time_service, miro_servi
     # Config flags (no token values)
     openai_status = "set" if config.openai_api_key else "missing (fallback parser active)"
     miro_status = "set" if miro_service.is_configured() else "missing (sync disabled)"
-    checkin_status = "enabled" if config.checkin_enabled else "disabled"
+    checkin_status = "enabled" if db_ok and state.checkin_enabled else "disabled"
+    bridge_status = "enabled" if config.health_bridge_enabled and config.health_bridge_token else "disabled"
+    async with session_factory() as session:
+        latest_health = await health_service.latest_snapshot(session, message.from_user.id)
 
     # Quiet mode
     quiet_info = ""
-    if db_ok and state.quiet_until and state.quiet_until > now:
+    if db_ok and state.quiet_until and ensure_aware(state.quiet_until, now.tzinfo) > now:
         quiet_info = f"\nQuiet until: {state.quiet_until.strftime('%H:%M %d.%m')}"
 
     text = (
@@ -76,26 +77,31 @@ async def health_cmd(message: Message, session_factory, time_service, miro_servi
         f"Scheduler: {'running' if scheduler_running else 'STOPPED'}\n"
         f"Scheduled reminder jobs: {reminder_jobs}\n"
         f"Check-ins: {checkin_status}\n"
+        f"Health bridge: {bridge_status}\n"
         f"Timezone: {config.timezone}\n"
         f"Now: {now.strftime('%Y-%m-%d %H:%M %Z')}\n\n"
         f"Active tasks: {db_tasks}\n"
         f"Active reminders: {db_reminders}\n"
         f"Active problem blocks: {db_blocks}"
         f"{quiet_info}"
+        + (f"\nLast Health snapshot: {latest_health.date} · {latest_health.steps} steps" if latest_health else "")
     )
     await message.answer(text)
     await screen_service.delete_user_input(message)
 
 
 @router.message(Command("debug_create_test_data"))
-async def debug_create_test_data(message: Message, session_factory, time_service, reminder_scheduler, screen_service):
+async def debug_create_test_data(message: Message, session_factory, time_service, reminder_scheduler, screen_service, config):
     """
     DEBUG ONLY. Creates 1 task + 1 reminder (+1 min) + 1 problem block.
-    Accessible only to ALLOWED_USER_ID (enforced by AccessMiddleware).
+    Accessible only to the primary owner/admin.
     Not shown in main menu.
     """
+    if message.from_user.id != config.allowed_user_id:
+        return
     from datetime import timedelta
-    from bot.database.queries import create_task, create_reminder, create_problem_block
+
+    from bot.database.queries import create_problem_block, create_reminder, create_task
 
     now = time_service.now()
     remind_at = now + timedelta(minutes=1)
@@ -151,8 +157,10 @@ async def miro_debug_cmd(message: Message, miro_service, config, screen_service)
     """
     Miro connectivity diagnostic.
     Safe: never shows MIRO_ACCESS_TOKEN or BOT_TOKEN.
-    Only accessible to ALLOWED_USER_ID via AccessMiddleware.
+    Only accessible to the primary owner/admin.
     """
+    if message.from_user.id != config.allowed_user_id:
+        return
     if not miro_service.is_configured():
         await message.answer(
             "MIRO DEBUG\n\n"
@@ -224,9 +232,10 @@ async def miro_clear_bot_zone_preview_cmd(message: Message, session_factory, con
     if message.from_user.id != config.allowed_user_id:
         return
 
-    from sqlalchemy import select
-    from bot.database.models import MiroMapping
     from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+    from sqlalchemy import select
+
+    from bot.database.models import MiroMapping
 
     try:
         async with session_factory() as session:
@@ -433,7 +442,7 @@ async def debug_jobs_cmd(message: Message, reminder_scheduler, checkin_service, 
     study_jobs = []
     other_jobs = []
 
-    for source, job in all_jobs:
+    for _source, job in all_jobs:
         if isinstance(job, str):
             other_jobs.append(f"  ERROR: {job}")
             continue
@@ -473,4 +482,3 @@ async def debug_jobs_cmd(message: Message, reminder_scheduler, checkin_service, 
         lines.extend(other_jobs)
 
     await message.answer("\n".join(lines))
-

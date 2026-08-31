@@ -2,13 +2,21 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timedelta
+from typing import ClassVar
 
-from bot.database.queries import add_problem_event, create_problem_block, get_active_problem_blocks, get_problem_block_by_id
+from bot.database.queries import (
+    add_problem_event,
+    create_problem_block,
+    get_active_problem_blocks,
+    get_problem_block_by_id,
+)
+from bot.services.content_quality import is_meaningful_problem
+from bot.services.datetime_utils import ensure_aware
 from bot.services.study_problem_templates import build_study_problem_plan
 
 
 class ProblemBlockService:
-    VALID_CATEGORIES = {"study", "exam", "money", "orders", "health", "training", "sleep", "conflict", "work", "discipline", "overload", "system", "other"}
+    VALID_CATEGORIES: ClassVar[set[str]] = {"study", "exam", "money", "orders", "health", "training", "sleep", "conflict", "work", "discipline", "overload", "system", "other"}
 
     def _norm_priority(self, value: str | None) -> str:
         return value if value in {"low", "medium", "high", "urgent"} else "medium"
@@ -72,19 +80,34 @@ class ProblemBlockService:
 
     async def get_due_problem_blocks(self, user_id: int, session, now: datetime):
         items = await get_active_problem_blocks(session, user_id, now)
-        return [i for i in items if i.next_review_at and i.next_review_at <= now]
+        return [
+            i for i in items
+            if i.next_review_at and ensure_aware(i.next_review_at, now.tzinfo) <= now
+        ]
 
     async def pick_checkin_problem_block(self, user_id: int, session, checkin_type: str, now: datetime):
         items = await get_active_problem_blocks(session, user_id, now)
-        due = [i for i in items if (not i.next_review_at) or i.next_review_at <= now]
+        due = [
+            i for i in items
+            if is_meaningful_problem(i)
+            and i.next_review_at
+            and ensure_aware(i.next_review_at, now.tzinfo) <= now
+            and (
+                i.priority in {"high", "urgent"}
+                or (
+                    i.deadline
+                    and ensure_aware(i.deadline, now.tzinfo) <= now + timedelta(hours=48)
+                )
+            )
+        ]
         if not due:
             return None
         pr = {"urgent": 0, "high": 1, "medium": 2, "low": 3}
         due.sort(
             key=lambda b: (
                 pr.get(b.priority, 9),
-                b.deadline or datetime(9999, 12, 31, tzinfo=now.tzinfo),
-                b.created_at,
+                ensure_aware(b.deadline, now.tzinfo) if b.deadline else datetime(9999, 12, 31, tzinfo=now.tzinfo),
+                ensure_aware(b.created_at, now.tzinfo),
             )
         )
         return due[0]
@@ -102,7 +125,7 @@ class ProblemBlockService:
         items = await get_active_problem_blocks(session, user_id, now + timedelta(days=3650))
         expired = []
         for item in items:
-            if item.deadline and item.deadline < now:
+            if item.deadline and ensure_aware(item.deadline, now.tzinfo) < now:
                 item.status = "expired"
                 item.archived_at = now
                 item.archive_reason = "deadline passed"
@@ -131,7 +154,16 @@ class ProblemBlockService:
 
     def build_problem_solution_summary(self, block) -> str:
         steps = [s.strip() for s in (block.solution_strategy or "").split(".") if s.strip()][:3]
-        if not steps:
-            steps = ["Снизить риск ошибки.", "Зафиксировать единый подход.", "Проверить результат."]
-        body = "\n".join(f"{i+1}. {step}." for i, step in enumerate(steps[:3]))
-        return f"ПРОБЛЕМА\n{block.problem_text or block.title}\n\nРЕШЕНИЕ\n{body}\n\nСЛЕДУЮЩИЙ ШАГ\n{block.next_action}"
+        lines = [
+            "Что мешает:",
+            block.problem_text or block.title,
+        ]
+        if steps:
+            lines += ["", "Как разбираем:"]
+            lines.extend(f"{i}. {step}." for i, step in enumerate(steps, 1))
+        lines += [
+            "",
+            "Первое конкретное действие:",
+            block.next_action or "Уточнить проблему обычным сообщением.",
+        ]
+        return "\n".join(lines)

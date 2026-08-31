@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from typing import ClassVar
+
 
 class OverloadService:
-    KEYWORDS = {
+    KEYWORDS: ClassVar[dict[str, str]] = {
         "плохо": "stress",
         "сгораю": "stress",
         "не вывожу": "stress",

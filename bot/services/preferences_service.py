@@ -11,6 +11,11 @@ DEFAULTS: dict = {
     "response_detail": "standard",  # short | standard | detailed
     "answer_style": "dry",     # dry | balanced | soft
     "chat_cleanup_enabled": True,
+    "workday_start_hour": 9,
+    "workday_end_hour": 21,
+    "daily_focus_minutes": 180,
+    "large_task_block_minutes": 90,
+    "planning_weekends": True,
 }
 
 
@@ -57,3 +62,16 @@ class PreferencesService:
 
     def chat_cleanup_enabled(self, profile) -> bool:
         return bool(self.get(profile, "chat_cleanup_enabled"))
+
+    def planning(self, profile) -> dict[str, int | bool]:
+        start = max(0, min(22, int(self.get(profile, "workday_start_hour") or 9)))
+        end = max(start + 1, min(23, int(self.get(profile, "workday_end_hour") or 21)))
+        focus = max(60, min(480, int(self.get(profile, "daily_focus_minutes") or 180)))
+        block = max(30, min(180, int(self.get(profile, "large_task_block_minutes") or 90)))
+        return {
+            "workday_start_hour": start,
+            "workday_end_hour": end,
+            "daily_focus_minutes": focus,
+            "large_task_block_minutes": block,
+            "planning_weekends": bool(self.get(profile, "planning_weekends")),
+        }

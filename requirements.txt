@@ -1,7 +1,9 @@
 aiogram==3.20.0
 sqlalchemy==2.0.41
+greenlet>=3.0,<4.0
 aiosqlite==0.21.0
 apscheduler==3.10.4
 httpx==0.28.1
+aiohttp>=3.11,<4.0
 python-dotenv==1.1.0
 pydantic==2.11.4

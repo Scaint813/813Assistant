@@ -1,12 +1,24 @@
 from __future__ import annotations
 
 import json
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from bot.database.models import CleanupLog, ExamDate, MiroMapping, PendingPreview, ProblemBlock, ProblemBlockEvent, Reminder, ScheduleOverride, StudyScheduleItem, Task, UserProfile, UserRuntimeState
+from bot.database.models import (
+    CleanupLog,
+    MiroMapping,
+    PendingPreview,
+    ProblemBlock,
+    ProblemBlockEvent,
+    Project,
+    Reminder,
+    ScheduleOverride,
+    Task,
+    UserProfile,
+    UserRuntimeState,
+)
 
 
 async def get_or_create_user_profile(session: AsyncSession, user_id: int, name: str, timezone: str) -> UserProfile:
@@ -20,12 +32,19 @@ async def get_or_create_user_profile(session: AsyncSession, user_id: int, name: 
     return profile
 
 
-async def get_or_create_runtime_state(session: AsyncSession, user_id: int) -> UserRuntimeState:
+async def get_or_create_runtime_state(
+    session: AsyncSession,
+    user_id: int,
+    default_checkin_enabled: bool = False,
+) -> UserRuntimeState:
     res = await session.execute(select(UserRuntimeState).where(UserRuntimeState.user_id == user_id))
     state = res.scalar_one_or_none()
     if state:
         return state
-    state = UserRuntimeState(user_id=user_id)
+    state = UserRuntimeState(
+        user_id=user_id,
+        checkin_enabled=default_checkin_enabled,
+    )
     session.add(state)
     await session.flush()
     return state
@@ -54,6 +73,62 @@ async def create_task(session: AsyncSession, user_id: int, title: str, **kwargs)
     session.add(task)
     await session.flush()
     return task
+
+
+async def get_or_create_project(
+    session: AsyncSession,
+    user_id: int,
+    title: str,
+    objective: str = "",
+) -> Project:
+    normalized = title.strip()[:128]
+    result = await session.execute(
+        select(Project).where(
+            and_(
+                Project.user_id == user_id,
+                Project.status == "active",
+                Project.title == normalized,
+            )
+        ).order_by(Project.id.desc())
+    )
+    project = result.scalar_one_or_none()
+    if project:
+        if objective and not project.objective:
+            project.objective = objective[:2000]
+        return project
+    project = Project(
+        user_id=user_id,
+        title=normalized or "Проект",
+        objective=(objective or normalized)[:2000],
+    )
+    session.add(project)
+    await session.flush()
+    return project
+
+
+async def get_active_projects(session: AsyncSession, user_id: int) -> list[Project]:
+    result = await session.execute(
+        select(Project)
+        .where(and_(Project.user_id == user_id, Project.status == "active"))
+        .order_by(Project.updated_at.desc(), Project.id.desc())
+    )
+    return list(result.scalars().all())
+
+
+async def get_project_by_id(session: AsyncSession, user_id: int, project_id: int) -> Project | None:
+    result = await session.execute(
+        select(Project).where(and_(Project.user_id == user_id, Project.id == project_id))
+    )
+    return result.scalar_one_or_none()
+
+
+async def remember_entity(
+    session: AsyncSession, user_id: int, entity_type: str, entity_id: int
+) -> None:
+    state = await get_or_create_runtime_state(session, user_id)
+    state.last_entity_type = entity_type
+    state.last_entity_id = entity_id
+    await session.flush()
 
 
 async def create_reminder(session: AsyncSession, user_id: int, text: str, remind_at: datetime, **kwargs) -> Reminder:
@@ -144,7 +219,11 @@ async def archive_task(session: AsyncSession, task: Task, reason: str, now: date
 
 
 async def get_archived_tasks(session: AsyncSession, user_id: int) -> list[Task]:
-    res = await session.execute(select(Task).where(and_(Task.user_id == user_id, Task.status == "archived")).order_by(Task.archived_at.desc()))
+    res = await session.execute(
+        select(Task)
+        .where(and_(Task.user_id == user_id, Task.status.in_(["archived", "done"])))
+        .order_by(Task.updated_at.desc())
+    )
     return list(res.scalars().all())
 
 
@@ -204,6 +283,35 @@ async def get_or_create_miro_mapping(session: AsyncSession, user_id: int, entity
     return row
 
 
+async def get_miro_mappings_for_type(
+    session: AsyncSession, user_id: int, entity_type: str, board_id: str
+) -> list[MiroMapping]:
+    res = await session.execute(
+        select(MiroMapping).where(
+            and_(
+                MiroMapping.user_id == user_id,
+                MiroMapping.entity_type == entity_type,
+                MiroMapping.board_id == board_id,
+            )
+        )
+    )
+    return list(res.scalars().all())
+
+
+async def get_miro_mappings_for_board(
+    session: AsyncSession, user_id: int, board_id: str
+) -> list[MiroMapping]:
+    res = await session.execute(
+        select(MiroMapping).where(
+            and_(
+                MiroMapping.user_id == user_id,
+                MiroMapping.board_id == board_id,
+            )
+        )
+    )
+    return list(res.scalars().all())
+
+
 async def get_user_profile(session: AsyncSession, user_id: int) -> UserProfile | None:
     res = await session.execute(select(UserProfile).where(UserProfile.user_id == user_id))
     return res.scalar_one_or_none()
@@ -226,6 +334,20 @@ async def get_done_reminders_count(session: AsyncSession, user_id: int) -> int:
         )
     )
     return res.scalar_one() or 0
+
+
+async def get_closed_reminders(session: AsyncSession, user_id: int) -> list[Reminder]:
+    res = await session.execute(
+        select(Reminder)
+        .where(
+            and_(
+                Reminder.user_id == user_id,
+                Reminder.status.in_(["done", "cancelled"]),
+            )
+        )
+        .order_by(Reminder.updated_at.desc())
+    )
+    return list(res.scalars().all())
 
 
 async def get_tasks_by_keywords(session: AsyncSession, user_id: int, keywords: list[str]) -> list[Task]:
@@ -271,6 +393,7 @@ async def get_problem_blocks_by_categories(session: AsyncSession, user_id: int, 
 
 async def create_exam_date(session, user_id, subject, exam_date, **kwargs):
     from sqlalchemy import and_, select
+
     from bot.database.models import ExamDate
     res = await session.execute(
         select(ExamDate).where(and_(ExamDate.user_id == user_id, ExamDate.subject == subject))
@@ -290,13 +413,13 @@ async def create_exam_date(session, user_id, subject, exam_date, **kwargs):
 
 
 async def get_active_exam_dates(session, user_id):
-    from datetime import date as _date
     from sqlalchemy import and_, select
+
     from bot.database.models import ExamDate
     res = await session.execute(
         select(ExamDate).where(
             and_(ExamDate.user_id == user_id, ExamDate.status == "active",
-                 ExamDate.exam_date >= _date.today())
+                 ExamDate.exam_date >= datetime.now(UTC).date())
         ).order_by(ExamDate.exam_date.asc())
     )
     return list(res.scalars().all())
@@ -304,6 +427,7 @@ async def get_active_exam_dates(session, user_id):
 
 async def get_all_exam_dates(session, user_id):
     from sqlalchemy import select
+
     from bot.database.models import ExamDate
     res = await session.execute(
         select(ExamDate).where(ExamDate.user_id == user_id).order_by(ExamDate.exam_date.asc())
@@ -323,6 +447,7 @@ async def create_study_schedule_item(session, user_id, subject, **kwargs):
 
 async def get_active_study_schedule(session, user_id):
     from sqlalchemy import and_, select
+
     from bot.database.models import StudyScheduleItem
     res = await session.execute(
         select(StudyScheduleItem).where(
@@ -334,6 +459,7 @@ async def get_active_study_schedule(session, user_id):
 
 async def get_all_study_schedule(session, user_id):
     from sqlalchemy import select
+
     from bot.database.models import StudyScheduleItem
     res = await session.execute(
         select(StudyScheduleItem).where(StudyScheduleItem.user_id == user_id)
@@ -352,8 +478,9 @@ async def upsert_exam_date_smart(session, user_id, subject, exam_date, normalize
     If normalizer is provided, subject is normalized before lookup.
     """
     from sqlalchemy import select
+
     from bot.database.models import ExamDate
-    from bot.services.subject_normalizer import normalize_subject, find_best_exam_match
+    from bot.services.subject_normalizer import find_best_exam_match, normalize_subject
 
     canonical_subject = normalize_subject(subject) if normalizer is None else normalizer(subject)
 
@@ -367,7 +494,6 @@ async def upsert_exam_date_smart(session, user_id, subject, exam_date, normalize
     existing = find_best_exam_match(all_exams, canonical_subject)
 
     if existing:
-        old_date = existing.exam_date
         existing.exam_date = exam_date
         existing.status = "active"
         await session.flush()
@@ -383,6 +509,7 @@ async def upsert_exam_date_smart(session, user_id, subject, exam_date, normalize
 async def get_exam_date_by_id(session, user_id, exam_id):
     """Return ExamDate by id for user_id, or None."""
     from sqlalchemy import and_, select
+
     from bot.database.models import ExamDate
     res = await session.execute(
         select(ExamDate).where(and_(ExamDate.id == exam_id, ExamDate.user_id == user_id))
@@ -410,6 +537,7 @@ async def find_duplicate_exams(session, user_id):
     duplicate = the one to archive.
     """
     from sqlalchemy import select
+
     from bot.database.models import ExamDate
     from bot.services.subject_normalizer import find_duplicate_exam_pairs
 
@@ -426,6 +554,7 @@ async def find_duplicate_exams(session, user_id):
 async def archive_study_schedule_item(session, user_id, item_id, notes=""):
     """Set study_schedule_item status to 'archived'. Returns item or None."""
     from sqlalchemy import and_, select
+
     from bot.database.models import StudyScheduleItem
     res = await session.execute(
         select(StudyScheduleItem).where(
