@@ -19,7 +19,8 @@ WELCOME_TEXT = (
     "• «составь мне план тренировок на три дня в неделю».\n\n"
     "Можно перечислить несколько поручений отдельными строками. "
     "Перед изменением данных я покажу, что именно понял. "
-    "Кнопки ниже — примеры фраз, а не отдельные режимы. "
+    "Кнопка «Управление» открывает постоянный планнер: расписание на сегодня, "
+    "завтра и неделю, задачи и профиль. Остальные кнопки — примеры фраз. "
     "В «Профиле» выбери свой город: напоминания и планы используют личный часовой пояс."
 )
 
@@ -42,6 +43,9 @@ async def start_cmd(
         )
         await session.commit()
     navigation_service.reset(message.from_user.id)
+    mini_app_url = config.mini_app_public_url.rstrip("/") + "/"
+    if not (config.mini_app_enabled and mini_app_url.startswith("https://")):
+        mini_app_url = ""
     async with session_factory() as session:
         await screen_service.render_screen(
             bot=bot,
@@ -49,7 +53,7 @@ async def start_cmd(
             user_id=message.from_user.id,
             chat_id=message.chat.id,
             text=WELCOME_TEXT,
-            reply_markup=main_menu(),
+            reply_markup=main_menu(mini_app_url),
         )
         await session.commit()
     await screen_service.delete_user_input(message)

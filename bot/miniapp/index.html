@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#f4f5f7">
+  <title>813 Assistant</title>
+  <link rel="stylesheet" href="assets/app.css?v=1">
+  <script src="https://telegram.org/js/telegram-web-app.js?63"></script>
+  <script src="assets/app.js?v=1" defer></script>
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <div>
+        <p class="eyebrow" id="date-label">Расписание</p>
+        <h1 id="page-title">Сегодня</h1>
+      </div>
+      <button class="icon-button" id="refresh-button" type="button" aria-label="Обновить данные">
+        <span aria-hidden="true">↻</span>
+      </button>
+    </header>
+
+    <main id="app" tabindex="-1">
+      <section class="status-screen" id="loading-screen" aria-live="polite">
+        <span class="loader" aria-hidden="true"></span>
+        <p>Собираю план дня…</p>
+      </section>
+      <section class="status-screen hidden" id="error-screen" aria-live="assertive">
+        <span class="status-symbol" aria-hidden="true">!</span>
+        <h2>Не удалось открыть планнер</h2>
+        <p id="error-message">Попробуй открыть его кнопкой «Управление» в чате с ботом.</p>
+        <button class="primary-button" id="retry-button" type="button">Повторить</button>
+      </section>
+      <div id="view" class="hidden"></div>
+    </main>
+
+    <button class="fab" id="add-task-button" type="button" aria-label="Добавить задачу">
+      <span aria-hidden="true">+</span>
+    </button>
+
+    <nav class="bottom-nav" aria-label="Основное меню">
+      <button class="nav-item active" data-view="today" type="button" aria-current="page">
+        <span class="nav-icon" aria-hidden="true">⌂</span>
+        <span>Сегодня</span>
+      </button>
+      <button class="nav-item" data-view="planner" type="button">
+        <span class="nav-icon" aria-hidden="true">▦</span>
+        <span>Планнер</span>
+      </button>
+      <button class="nav-item" data-view="tasks" type="button">
+        <span class="nav-icon" aria-hidden="true">✓</span>
+        <span>Задачи</span>
+      </button>
+      <button class="nav-item" data-view="profile" type="button">
+        <span class="nav-icon" aria-hidden="true">●</span>
+        <span>Профиль</span>
+      </button>
+    </nav>
+  </div>
+
+  <dialog id="task-dialog" class="sheet-dialog">
+    <form id="task-form" method="dialog">
+      <div class="sheet-handle" aria-hidden="true"></div>
+      <div class="sheet-heading">
+        <div>
+          <p class="eyebrow">Новая запись</p>
+          <h2>Добавить задачу</h2>
+        </div>
+        <button class="icon-button" value="cancel" aria-label="Закрыть" type="submit">×</button>
+      </div>
+      <label class="field">
+        <span>Что нужно сделать</span>
+        <input id="task-title" name="title" type="text" maxlength="255" minlength="2" required
+               autocomplete="off" placeholder="Например, отправить документы">
+      </label>
+      <div class="form-row">
+        <label class="field">
+          <span>Срок</span>
+          <input id="task-deadline" name="deadline" type="datetime-local">
+        </label>
+        <label class="field field-small">
+          <span>Минут</span>
+          <input id="task-duration" name="estimated_minutes" type="number" min="5" max="10080" step="5" value="30">
+        </label>
+      </div>
+      <button class="primary-button full-width" id="save-task-button" value="default" type="submit">Добавить</button>
+    </form>
+  </dialog>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+</body>
+</html>

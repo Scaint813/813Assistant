@@ -54,6 +54,10 @@ class Config:
     hse_ical_url: str
     hse_ical_sync_interval_minutes: int
     default_transfer_buffer_minutes: int
+    mini_app_enabled: bool
+    mini_app_public_url: str
+    mini_app_host: str
+    mini_app_port: int
     reliability_enabled: bool
     backup_dir: str
     backup_retention_days: int
@@ -156,6 +160,10 @@ def get_config() -> Config:
         default_transfer_buffer_minutes=int(
             os.getenv("DEFAULT_TRANSFER_BUFFER_MINUTES", "45")
         ),
+        mini_app_enabled=os.getenv("MINI_APP_ENABLED", "false").lower() == "true",
+        mini_app_public_url=os.getenv("MINI_APP_PUBLIC_URL", "").strip(),
+        mini_app_host=os.getenv("MINI_APP_HOST", "127.0.0.1"),
+        mini_app_port=int(os.getenv("MINI_APP_PORT", "8782")),
         reliability_enabled=os.getenv("RELIABILITY_ENABLED", "true").lower() == "true",
         backup_dir=os.getenv("BACKUP_DIR", "./backups"),
         backup_retention_days=int(os.getenv("BACKUP_RETENTION_DAYS", "14")),

@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from urllib.parse import urlparse
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-from aiogram.types import BotCommand
+from aiogram.types import BotCommand, MenuButtonWebApp, WebAppInfo
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from bot.config import get_config
@@ -44,6 +45,7 @@ from bot.services.health_service import HealthService
 from bot.services.hse_calendar_service import HSECalendarService
 from bot.services.intent_parser import IntentParser
 from bot.services.metric_service import MetricService
+from bot.services.mini_app_server import MiniAppServer
 from bot.services.miro_service import MiroService
 from bot.services.miro_sync_coordinator import MiroSyncCoordinator
 from bot.services.navigation_service import NavigationService
@@ -271,6 +273,40 @@ async def main() -> None:
             )
             await health_bridge.start()
 
+    mini_app_server = None
+    if cfg.mini_app_enabled:
+        mini_app_url = cfg.mini_app_public_url.rstrip("/") + "/"
+        parsed_mini_app_url = urlparse(mini_app_url)
+        if parsed_mini_app_url.scheme != "https" or not parsed_mini_app_url.netloc:
+            log.error(
+                "MINI_APP_ENABLED=true but MINI_APP_PUBLIC_URL is not a valid HTTPS URL; "
+                "Mini App disabled"
+            )
+        else:
+            mini_app_server = MiniAppServer(
+                cfg.mini_app_host,
+                cfg.mini_app_port,
+                cfg.bot_token,
+                cfg.allowed_user_ids,
+                session_factory,
+                time_service,
+                user_profile_service,
+                calendar_service,
+                conflict_service,
+                hse_calendar_service,
+            )
+            await mini_app_server.start()
+            try:
+                await bot.set_chat_menu_button(
+                    menu_button=MenuButtonWebApp(
+                        text="Управление",
+                        web_app=WebAppInfo(url=mini_app_url),
+                    )
+                )
+                log.info("Telegram Mini App menu button configured")
+            except Exception:
+                log.exception("Could not configure the Telegram Mini App menu button")
+
     # ── 8. DI wiring ───────────────────────────────────────────────────────
     dp["config"] = cfg
     dp["session_factory"] = session_factory
@@ -323,6 +359,8 @@ async def main() -> None:
         await miro_sync_coordinator.shutdown()
         if health_bridge:
             await health_bridge.stop()
+        if mini_app_server:
+            await mini_app_server.stop()
         reminder_scheduler.shutdown_scheduler()
         log.info("Scheduler stopped. Bot shutdown.")
 
