@@ -116,7 +116,6 @@ async def edit_preview_text(
         escape(render_preview(parsed)),
         reply_markup=confirm_keyboard(preview_id, parsed),
     )
-    await screen_service.delete_user_input(message)
 
 
 @router.callback_query(F.data.startswith("not_action_preview:"))

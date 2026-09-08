@@ -45,6 +45,8 @@ SYSTEM_PROMPT = """
   rest_day
   schedule_override
   show_today
+  show_tomorrow
+  show_week
   show_tasks
   show_reminders
   show_projects
@@ -131,7 +133,8 @@ SYSTEM_PROMPT = """
 12. Для повторяющегося reminder заполняй recurrence: none/daily/weekdays/weekly/monthly.
 
 13. Пользователь НЕ обязан помнить команды. Понимай естественные формулировки:
-    «что у меня сегодня» → show_today; «покажи все дела» → show_tasks;
+    «что у меня сегодня» → show_today; «что у меня завтра» → show_tomorrow;
+    «покажи расписание на неделю» → show_week; «покажи все дела» → show_tasks;
     «покажи напоминания» → show_reminders; «покажи проекты» → show_projects;
     «разберём входящие» → show_inbox; «что ты умеешь» → show_help;
     «подведи итоги недели» → show_weekly_review; «что делать сейчас» → show_next;
@@ -173,7 +176,7 @@ class TaskStep(BaseModel):
 class Intent(BaseModel):
     type: Literal[
         "create_task", "create_reminder", "rest_day", "schedule_override",
-        "show_today", "show_tasks", "do_nothing",
+        "show_today", "show_tomorrow", "show_week", "show_tasks", "do_nothing",
         "show_reminders", "show_projects", "show_inbox", "show_help",
         "show_weekly_review", "show_next", "pick_task", "plan_day",
         "show_archive", "show_study", "show_automations", "show_settings",
@@ -521,6 +524,17 @@ class AIService:
         if AIService._looks_like_day_plan_query(lowered):
             return {"intents": [{"type": "plan_day"}]}
 
+        if any(p in lowered for p in (
+            "что у меня завтра", "дела на завтра", "план на завтра",
+            "расписание на завтра", "покажи завтра",
+        )):
+            return {"intents": [{"type": "show_tomorrow"}]}
+        if any(p in lowered for p in (
+            "что у меня на неделю", "дела на неделю", "план на неделю",
+            "расписание на неделю", "покажи неделю", "ближайшие семь дней",
+        )):
+            return {"intents": [{"type": "show_week"}]}
+
         if AIService._looks_like_task_pick_query(lowered):
             return {"intents": [{"type": "pick_task"}]}
 
@@ -528,7 +542,10 @@ class AIService:
             return {"intents": [{"type": "decompose_project", "project": self._clean_project_request(text)}]}
 
         # ── Navigation / query intents ─────────────────────────────────────────
-        if any(p in lowered for p in ("что сегодня", "что у меня сегодня", "покажи сегодня", "план на сегодня")):
+        if any(p in lowered for p in (
+            "что сегодня", "что у меня сегодня", "дела на сегодня",
+            "покажи сегодня", "план на сегодня", "расписание на сегодня",
+        )):
             return {"intents": [{"type": "show_today"}]}
         if any(p in lowered for p in ("покажи задачи", "что по задачам", "активные задачи")):
             return {"intents": [{"type": "show_tasks"}]}

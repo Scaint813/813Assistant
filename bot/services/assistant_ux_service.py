@@ -1,12 +1,21 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, time, timedelta
 from html import escape
 
 from sqlalchemy import select
 
-from bot.database.models import HealthSnapshot, Task, TrainingProfile, WorkoutSession
+from bot.database.models import (
+    CalendarEvent,
+    ExamDate,
+    HealthSnapshot,
+    StudyScheduleItem,
+    Task,
+    TaskPlanBlock,
+    TrainingProfile,
+    WorkoutSession,
+)
 from bot.database.queries import (
     get_active_problem_blocks,
     get_active_reminders,
@@ -169,6 +178,259 @@ class AssistantUXService:
 
         entity = self._task_entity(available[0]) if available else None
         return AssistantScreen("\n".join(lines), entity, [self._task_entity(task) for task in available[:3]])
+
+    async def planner(
+        self,
+        session,
+        user_id: int,
+        now: datetime,
+        period: str = "today",
+    ) -> AssistantScreen:
+        """Render the saved schedule without silently rescheduling any tasks."""
+        period_days = {"today": (0, 1), "tomorrow": (1, 1), "week": (0, 7)}
+        if period not in period_days:
+            raise ValueError(f"Unsupported planner period: {period}")
+
+        offset, days_count = period_days[period]
+        first_date = now.date() + timedelta(days=offset)
+        last_date = first_date + timedelta(days=days_count - 1)
+        window_start = datetime.combine(first_date, time.min, tzinfo=now.tzinfo)
+        window_end = datetime.combine(last_date + timedelta(days=1), time.min, tzinfo=now.tzinfo)
+
+        task_result = await session.execute(
+            select(Task).where(Task.user_id == user_id, Task.status == "active")
+        )
+        tasks = [task for task in task_result.scalars().all() if is_meaningful_task(task)]
+        tasks_by_id = {task.id: task for task in tasks}
+        reminders = await get_active_reminders(session, user_id)
+
+        block_result = await session.execute(
+            select(TaskPlanBlock).where(
+                TaskPlanBlock.user_id == user_id,
+                TaskPlanBlock.status == "planned",
+            ).order_by(TaskPlanBlock.start_at.asc())
+        )
+        all_blocks = list(block_result.scalars().all())
+        blocks = [
+            block for block in all_blocks
+            if block.task_id in tasks_by_id and first_date <= block.plan_date <= last_date
+        ]
+
+        event_result = await session.execute(
+            select(CalendarEvent).where(
+                CalendarEvent.user_id == user_id,
+                CalendarEvent.is_busy.is_(True),
+                CalendarEvent.start_at < window_end,
+                CalendarEvent.end_at > window_start,
+            ).order_by(CalendarEvent.start_at.asc())
+        )
+        events = list(event_result.scalars().all())
+
+        workout_result = await session.execute(
+            select(WorkoutSession).where(
+                WorkoutSession.user_id == user_id,
+                WorkoutSession.status == "planned",
+                WorkoutSession.scheduled_for >= window_start,
+                WorkoutSession.scheduled_for < window_end,
+            ).order_by(WorkoutSession.scheduled_for.asc())
+        )
+        workouts = list(workout_result.scalars().all())
+
+        study_result = await session.execute(
+            select(StudyScheduleItem).where(
+                StudyScheduleItem.user_id == user_id,
+                StudyScheduleItem.status == "active",
+            )
+        )
+        study_items = list(study_result.scalars().all())
+        exam_result = await session.execute(
+            select(ExamDate).where(
+                ExamDate.user_id == user_id,
+                ExamDate.status == "active",
+                ExamDate.exam_date >= first_date,
+                ExamDate.exam_date <= last_date,
+            ).order_by(ExamDate.exam_date.asc())
+        )
+        exams = list(exam_result.scalars().all())
+        overrides = [
+            item for item in await get_upcoming_overrides(session, user_id, first_date)
+            if item.date <= last_date
+        ]
+
+        dates = [first_date + timedelta(days=index) for index in range(days_count)]
+        entries: dict = {day: [] for day in dates}
+        shown_task_ids: set[int] = set()
+        task_entities: list[dict] = []
+
+        def add_entry(day, at, order: int, text_value: str, task: Task | None = None) -> None:
+            if day not in entries:
+                return
+            entries[day].append((at, order, text_value))
+            if task is not None and task.id not in shown_task_ids:
+                shown_task_ids.add(task.id)
+                task_entities.append(self._task_entity(task))
+
+        tasks_with_blocks = {block.task_id for block in blocks}
+        for block in blocks:
+            task = tasks_by_id[block.task_id]
+            start = ensure_aware(block.start_at, now.tzinfo)
+            end = ensure_aware(block.end_at, now.tzinfo)
+            add_entry(
+                block.plan_date,
+                start,
+                20,
+                f"{start.strftime('%H:%M')}–{end.strftime('%H:%M')} · {self._short_text(task.title)}",
+                task,
+            )
+
+        for task in tasks:
+            if task.id in tasks_with_blocks:
+                continue
+            scheduled_start = ensure_aware(task.scheduled_start, now.tzinfo)
+            if scheduled_start and window_start <= scheduled_start < window_end:
+                scheduled_end = ensure_aware(task.scheduled_end, now.tzinfo)
+                clock = scheduled_start.strftime("%H:%M")
+                if scheduled_end:
+                    clock += f"–{scheduled_end.strftime('%H:%M')}"
+                add_entry(
+                    scheduled_start.date(),
+                    scheduled_start,
+                    20,
+                    f"{clock} · {self._short_text(task.title)}",
+                    task,
+                )
+                continue
+            deadline = ensure_aware(task.deadline, now.tzinfo)
+            if deadline and window_start <= deadline < window_end:
+                add_entry(
+                    deadline.date(),
+                    deadline,
+                    40,
+                    f"до {deadline.strftime('%H:%M')} · {self._short_text(task.title)}",
+                    task,
+                )
+            elif first_date == now.date() and deadline and deadline < now:
+                add_entry(
+                    first_date,
+                    window_start,
+                    5,
+                    f"⚠️ просрочено · {self._short_text(task.title)}",
+                    task,
+                )
+
+        for reminder in reminders:
+            remind_at = ensure_aware(reminder.remind_at, now.tzinfo)
+            if remind_at and window_start <= remind_at < window_end:
+                add_entry(
+                    remind_at.date(),
+                    remind_at,
+                    30,
+                    f"🔔 {remind_at.strftime('%H:%M')} · {self._short_text(reminder.text)}",
+                )
+
+        for event in events:
+            start = ensure_aware(event.start_at, now.tzinfo)
+            end = ensure_aware(event.end_at, now.tzinfo)
+            event_day = max(start.date(), first_date)
+            final_event_day = min((end - timedelta(microseconds=1)).date(), last_date)
+            while event_day <= final_event_day:
+                shown_start = (
+                    start if event_day == start.date()
+                    else datetime.combine(event_day, time.min, tzinfo=now.tzinfo)
+                )
+                shown_end = (
+                    end if event_day == end.date()
+                    else datetime.combine(event_day, time.max, tzinfo=now.tzinfo)
+                )
+                add_entry(
+                    event_day,
+                    shown_start,
+                    10,
+                    f"📅 {shown_start.strftime('%H:%M')}–{shown_end.strftime('%H:%M')} · "
+                    f"{self._short_text(event.title)}",
+                )
+                event_day += timedelta(days=1)
+
+        for workout in workouts:
+            scheduled_for = ensure_aware(workout.scheduled_for, now.tzinfo)
+            add_entry(
+                scheduled_for.date(),
+                scheduled_for,
+                25,
+                f"🏋️ {scheduled_for.strftime('%H:%M')} · {self._short_text(workout.title)}",
+            )
+
+        weekday_codes = {
+            "mon": 0, "tue": 1, "wed": 2, "thu": 3,
+            "fri": 4, "sat": 5, "sun": 6,
+        }
+        for item in study_items:
+            if item.recurrence == "once":
+                continue
+            weekday = weekday_codes.get((item.weekday or "").casefold())
+            if weekday is None:
+                continue
+            try:
+                study_time = time.fromisoformat(item.time_str)
+            except (TypeError, ValueError):
+                continue
+            for day in dates:
+                if day.weekday() != weekday:
+                    continue
+                starts_at = datetime.combine(day, study_time, tzinfo=now.tzinfo)
+                label = item.title or item.subject
+                add_entry(
+                    day,
+                    starts_at,
+                    15,
+                    f"📚 {starts_at.strftime('%H:%M')} · {self._short_text(label)}",
+                )
+
+        for exam in exams:
+            add_entry(
+                exam.exam_date,
+                datetime.combine(exam.exam_date, time.max, tzinfo=now.tzinfo),
+                50,
+                f"📝 Экзамен · {self._short_text(exam.subject)}",
+            )
+
+        override_by_date = {item.date: item for item in overrides}
+        if period == "today":
+            title = "Планнер · сегодня"
+        elif period == "tomorrow":
+            title = "Планнер · завтра"
+        else:
+            title = (
+                f"Планнер · {first_date.day} {self.MONTHS[first_date.month - 1]} — "
+                f"{last_date.day} {self.MONTHS[last_date.month - 1]}"
+            )
+        lines = [title, f"Время: {self._timezone_label(now)}"]
+        max_per_day = 12 if days_count == 1 else 5
+        for day in dates:
+            lines += ["", self._planner_day_label(day, now)]
+            override = override_by_date.get(day)
+            if override and override.mode == "rest_day":
+                lines.append("Режим дня: отдых.")
+            day_entries = sorted(entries[day], key=lambda item: (item[0], item[1], item[2]))
+            if not day_entries:
+                lines.append("Свободно — дел со временем или сроком нет.")
+                continue
+            lines.extend(f"• {item[2]}" for item in day_entries[:max_per_day])
+            if len(day_entries) > max_per_day:
+                lines.append(f"• ещё {len(day_entries) - max_per_day}")
+
+        tasks_with_any_block = {
+            block.task_id for block in all_blocks if block.task_id in tasks_by_id
+        }
+        undated_count = sum(
+            1 for task in tasks
+            if not task.deadline and not task.scheduled_start and task.id not in tasks_with_any_block
+        )
+        if undated_count:
+            lines += ["", f"Без даты и времени: {undated_count}. Они доступны в «Покажи все дела»."]
+
+        primary = task_entities[0] if task_entities else None
+        return AssistantScreen("\n".join(lines).rstrip(), primary, task_entities)
 
     async def plan_day(self, session, user_id: int, now: datetime) -> AssistantScreen:
         """Explain what fits today, what does not, and how large tasks are split."""
@@ -502,6 +764,22 @@ class AssistantUXService:
 
     def _date_only_label(self, value) -> str:
         return f"{value.day} {self.MONTHS[value.month - 1]}"
+
+    def _planner_day_label(self, value, now: datetime) -> str:
+        if value == now.date():
+            prefix = "Сегодня"
+        elif value == now.date() + timedelta(days=1):
+            prefix = "Завтра"
+        else:
+            prefix = self.WEEKDAYS[value.weekday()].capitalize()
+        return f"{prefix} · {value.day} {self.MONTHS[value.month - 1]}"
+
+    @staticmethod
+    def _short_text(value: str, limit: int = 90) -> str:
+        normalized = " ".join((value or "Без названия").split())
+        if len(normalized) > limit:
+            normalized = normalized[: limit - 1].rstrip() + "…"
+        return escape(normalized)
 
     def _datetime_label(self, value: datetime, now: datetime) -> str:
         value = ensure_aware(value, now.tzinfo)

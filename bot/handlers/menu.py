@@ -20,7 +20,7 @@ from bot.database.queries import (
     get_upcoming_overrides,
     remember_entity,
 )
-from bot.keyboards.inline import problem_block_keyboard
+from bot.keyboards.inline import planner_keyboard, problem_block_keyboard
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -86,6 +86,10 @@ def _today_kb(screen) -> InlineKeyboardMarkup:
     rows.append([
         InlineKeyboardButton(text="Показать все задачи", callback_data="nav_tasks"),
         InlineKeyboardButton(text="Показать напоминания", callback_data="nav_reminders"),
+    ])
+    rows.append([
+        InlineKeyboardButton(text="Планнер на завтра", callback_data="planner:tomorrow"),
+        InlineKeyboardButton(text="План на 7 дней", callback_data="planner:week"),
     ])
     rows.append([
         InlineKeyboardButton(text="Разнести остаток", callback_data="plan_overflow_preview"),
@@ -215,6 +219,36 @@ async def render_reminders_for_user(
         await session.commit()
 
 
+async def render_planner_for_user(
+    user_id,
+    chat_id,
+    period,
+    session_factory,
+    time_service,
+    screen_service,
+    bot,
+    assistant_ux_service,
+):
+    async with session_factory() as session:
+        now = await _user_now(session, user_id, time_service)
+        screen = await assistant_ux_service.planner(session, user_id, now, period)
+        if screen.primary_entity:
+            await remember_entity(
+                session, user_id, screen.primary_entity["type"], screen.primary_entity["id"]
+            )
+        await session.commit()
+    async with session_factory() as session:
+        await screen_service.render_screen(
+            bot=bot,
+            session=session,
+            user_id=user_id,
+            chat_id=chat_id,
+            text=screen.text,
+            reply_markup=planner_keyboard(period),
+        )
+        await session.commit()
+
+
 async def build_archive_text(user_id, session_factory) -> str:
     async with session_factory() as session:
         tasks = await get_archived_tasks(session, user_id)
@@ -302,6 +336,26 @@ async def nav_reminders_cb(
     )
 
 
+@router.callback_query(F.data.startswith("planner:"))
+async def planner_period_cb(
+    callback, session_factory, time_service, screen_service, bot, assistant_ux_service,
+):
+    await callback.answer()
+    period = callback.data.split(":", 1)[1]
+    if period not in {"today", "tomorrow", "week"}:
+        period = "today"
+    await render_planner_for_user(
+        callback.from_user.id,
+        callback.message.chat.id,
+        period,
+        session_factory,
+        time_service,
+        screen_service,
+        bot,
+        assistant_ux_service,
+    )
+
+
 @router.callback_query(F.data == "nav_health")
 async def nav_health_cb(
     callback, session_factory, time_service, assistant_ux_service,
@@ -333,7 +387,8 @@ async def nav_help_cb(callback):
         "«перенеси задачу про документы на завтра»\n"
         "«отмени напоминание про врача»\n\n"
         "Сводки:\n"
-        "«покажи проекты», «разберём входящие», «подведи итоги недели»\n\n"
+        "«что у меня завтра», «покажи расписание на неделю», «покажи проекты»\n"
+        "или «подведи итоги недели»\n\n"
         "Перед сохранением ассистент показывает понятную проверку."
     )
 
@@ -613,21 +668,24 @@ async def more_menu(message, session_factory, screen_service, bot):
     )
 
 
-# ── /schedule ─────────────────────────────────────────────────────────────────
+# ── Planner ───────────────────────────────────────────────────────────────────
 
+@router.message(Command("planner"))
 @router.message(Command("schedule"))
-async def schedule(message, session_factory, time_service, screen_service, bot):
-    async with session_factory() as session:
-        overrides = await get_upcoming_overrides(session, message.from_user.id, time_service.today())
-    body = "\n".join([f"- {o.date}: {o.mode}" for o in overrides[:10]]) or "— нет"
-    async with session_factory() as session:
-        await screen_service.render_screen(
-            bot=bot, session=session,
-            user_id=message.from_user.id,
-            chat_id=message.chat.id,
-            text=f"Ближайшие исключения расписания:\n\n{body}",
-        )
-        await session.commit()
+@router.message(F.text == "Планнер")
+async def planner(
+    message, session_factory, time_service, screen_service, bot, assistant_ux_service,
+):
+    await render_planner_for_user(
+        message.from_user.id,
+        message.chat.id,
+        "today",
+        session_factory,
+        time_service,
+        screen_service,
+        bot,
+        assistant_ux_service,
+    )
     await screen_service.delete_user_input(message)
 
 
@@ -647,6 +705,8 @@ async def help_cmd(message, session_factory, screen_service, bot):
         "• «разбей ремонт на конкретные задачи»;\n"
         "• «перенеси задачу про документы на завтра»;\n"
         "• «задача с документами готова»;\n"
+        "• «что у меня завтра»;\n"
+        "• «покажи расписание на неделю»;\n"
         "• «покажи проекты»;\n"
         "• «подведи итоги недели».\n\n"
         "Перед изменением данных ассистент покажет проверку.",

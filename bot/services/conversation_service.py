@@ -30,6 +30,7 @@ HELP_TEXT = (
     "• «Задача с документами готова»;\n"
     "• «Дай мне одну задачу» — выбрать из уже сохранённых;\n"
     "• «Составь план на день: что влезет, а что перенести»;\n"
+    "• «Что у меня завтра?» или «Покажи расписание на неделю»;\n"
     "• «Разбей запуск магазина на конкретные шаги»;\n"
     "• «Покажи проекты» или «подведи итоги недели».\n\n"
     "Если поручений несколько, перечисли их отдельными строками. "
@@ -45,7 +46,7 @@ class ConversationReply:
 
 class ConversationService:
     QUERY_TYPES: ClassVar[frozenset[str]] = frozenset({
-        "show_today", "show_tasks", "show_reminders", "show_projects",
+        "show_today", "show_tomorrow", "show_week", "show_tasks", "show_reminders", "show_projects",
         "show_inbox", "show_help", "show_weekly_review", "show_next",
         "pick_task", "plan_day",
         "show_problem_blocks",
@@ -65,6 +66,18 @@ class ConversationService:
                     session, user_id, screen.primary_entity["type"], screen.primary_entity["id"]
                 )
             return ConversationReply(screen.text)
+        if intent_type in {"show_tomorrow", "show_week"}:
+            period = "tomorrow" if intent_type == "show_tomorrow" else "week"
+            screen = await self.assistant_ux_service.planner(
+                session, user_id, now, period
+            )
+            if screen.primary_entity:
+                await remember_entity(
+                    session, user_id, screen.primary_entity["type"], screen.primary_entity["id"]
+                )
+            from bot.keyboards.inline import planner_keyboard
+
+            return ConversationReply(screen.text, planner_keyboard(period))
         if intent_type == "plan_day":
             screen = await self.assistant_ux_service.plan_day(session, user_id, now)
             if screen.primary_entity:

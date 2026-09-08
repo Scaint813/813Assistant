@@ -123,6 +123,22 @@ class ConversationalUXTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(["plan_day"], [item["type"] for item in parsed["intents"]])
         self.assertEqual("deterministic", parsed["quality"]["parser_path"])
 
+    async def test_planner_phrases_select_tomorrow_and_week(self):
+        cases = {
+            "Покажи расписание на сегодня": "show_today",
+            "Что у меня завтра?": "show_tomorrow",
+            "Покажи расписание на неделю": "show_week",
+            "Составь план на неделю": "show_week",
+        }
+        for phrase, expected in cases.items():
+            with self.subTest(phrase=phrase):
+                parsed = await self.parser.parse_user_text(
+                    phrase,
+                    {"session_factory": self.sessions, "user_id": 1},
+                )
+                self.assertEqual([expected], [item["type"] for item in parsed["intents"]])
+                self.assertEqual("deterministic", parsed["quality"]["parser_path"])
+
     async def test_task_duration_keeps_real_forty_hour_estimate(self):
         parsed = await self.parser.parse_user_text(
             "Подготовить запуск проекта завтра, нужно 40 часов",

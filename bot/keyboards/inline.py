@@ -275,6 +275,27 @@ def day_plan_keyboard() -> InlineKeyboardMarkup:
     ])
 
 
+def planner_keyboard(period: str = "today") -> InlineKeyboardMarkup:
+    labels = (
+        ("Сегодня", "today"),
+        ("Завтра", "tomorrow"),
+        ("7 дней", "week"),
+    )
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(
+                text=("• " if value == period else "") + label,
+                callback_data=f"planner:{value}",
+            )
+            for label, value in labels
+        ],
+        [
+            InlineKeyboardButton(text="Все задачи", callback_data="nav_tasks"),
+            InlineKeyboardButton(text="Напоминания", callback_data="nav_reminders"),
+        ],
+    ])
+
+
 def overflow_proposal_keyboard(has_proposal: bool = True) -> InlineKeyboardMarkup:
     rows = []
     if has_proposal:

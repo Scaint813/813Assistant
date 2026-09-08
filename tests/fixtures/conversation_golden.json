@@ -1,6 +1,9 @@
 [
   {"id": "today-1", "text": "Что у меня сегодня?", "types": ["show_today"]},
   {"id": "today-2", "text": "план на сегодня", "types": ["show_today"]},
+  {"id": "today-schedule", "text": "Покажи расписание на сегодня", "types": ["show_today"]},
+  {"id": "tomorrow", "text": "Что у меня завтра?", "types": ["show_tomorrow"]},
+  {"id": "week-planner", "text": "Покажи расписание на неделю", "types": ["show_week"]},
   {"id": "tasks-1", "text": "Покажи все дела", "types": ["show_tasks"]},
   {"id": "tasks-2", "text": "что по задачам", "types": ["show_tasks"]},
   {"id": "reminders-list", "text": "Какие у меня напоминания?", "types": ["show_reminders"]},

@@ -92,8 +92,11 @@ class FakeState:
 
 
 class FakeScreen:
+    def __init__(self):
+        self.deleted_inputs = []
+
     async def delete_user_input(self, message):
-        return None
+        self.deleted_inputs.append(message)
 
 
 class FakeScheduler:
@@ -142,12 +145,13 @@ class StagingE2ETests(unittest.IsolatedAsyncioTestCase):
 
     async def test_text_to_preview_to_result_correction_rolls_back_whole_batch(self):
         message = FakeMessage("Купить лекарства")
+        screen_service = FakeScreen()
         await capture_text(
             message=message,
             session_factory=self.sessions,
             intent_parser=self.parser,
             time_service=self.clock,
-            screen_service=FakeScreen(),
+            screen_service=screen_service,
             metric_service=self.metrics,
             assistant_ux_service=SimpleNamespace(),
             conversation_service=SimpleNamespace(QUERY_TYPES=set()),
@@ -157,6 +161,7 @@ class StagingE2ETests(unittest.IsolatedAsyncioTestCase):
             preview = await session.scalar(select(PendingPreview))
         self.assertIsNotNone(preview)
         self.assertIn("Добавить задачу", str(message.answers[0][1]))
+        self.assertEqual([], screen_service.deleted_inputs)
 
         confirmed = await self._confirm(preview.id)
         self.assertIn("Всё верно", str(confirmed.message.edits[0][1]))
@@ -176,15 +181,17 @@ class StagingE2ETests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Сохранённое отменено", correction.message.edits[-1][0])
 
         corrected = FakeMessage("Купить витамины завтра на 15 минут")
+        edit_screen_service = FakeScreen()
         await edit_preview_text(
             message=corrected,
             state=state,
             session_factory=self.sessions,
             intent_parser=self.parser,
-            screen_service=FakeScreen(),
+            screen_service=edit_screen_service,
             metric_service=self.metrics,
             quality_service=self.quality,
         )
+        self.assertEqual([], edit_screen_service.deleted_inputs)
         await self._confirm(preview.id)
 
         async with self.sessions() as session:

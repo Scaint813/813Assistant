@@ -73,7 +73,6 @@ async def capture_text(
         await session.commit()
     if parsed.get("clarification"):
         await message.answer(parsed["clarification"])
-        await screen_service.delete_user_input(message)
         return
     first_intent = (parsed.get("intents") or [{}])[0].get("type")
     intents = parsed.get("intents") or []
@@ -86,7 +85,6 @@ async def capture_text(
 
     if first_intent == "do_nothing":
         await message.answer("Принял. Ничего не фиксирую.")
-        await screen_service.delete_user_input(message)
         return
 
     if len(intents) == 1 and first_intent in conversation_service.QUERY_TYPES:
@@ -111,11 +109,11 @@ async def capture_text(
             await session.commit()
         if not can_render_screen:
             await message.answer(reply.text, reply_markup=reply.reply_markup)
-        await screen_service.delete_user_input(message)
         return
 
     # ── Action Preview ─────────────────────────────────────────────────────────
-    # Delete user message AFTER preview is sent (text already read by parser)
+    # Keep the original request visible: it is useful context until the user
+    # confirms or corrects the preview, and must never look like a deleted task.
     async with session_factory() as session:
         preview = await create_pending_preview(
             session, message.from_user.id, "text", text, text, parsed
@@ -129,4 +127,3 @@ async def capture_text(
         escape(render_preview(parsed)),
         reply_markup=confirm_keyboard(preview.id, parsed),
     )
-    await screen_service.delete_user_input(message)

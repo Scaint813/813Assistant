@@ -7,7 +7,15 @@ from zoneinfo import ZoneInfo
 
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from bot.database.models import Base, HealthSnapshot, Reminder, Task, WorkoutSession
+from bot.database.models import (
+    Base,
+    CalendarEvent,
+    HealthSnapshot,
+    Reminder,
+    Task,
+    TaskPlanBlock,
+    WorkoutSession,
+)
 from bot.handlers.menu import _more_kb, help_cmd
 from bot.handlers.start import WELCOME_TEXT
 from bot.keyboards.main_menu import main_menu
@@ -33,8 +41,9 @@ class TelegramUXTests(unittest.IsolatedAsyncioTestCase):
         rows = [[button.text for button in row] for row in main_menu().keyboard]
         self.assertEqual(
             [
-                ["Что у меня сегодня?", "Покажи все дела"],
-                ["Профиль", "Что ты умеешь?"],
+                ["Что у меня сегодня?", "Планнер"],
+                ["Покажи все дела", "Профиль"],
+                ["Что ты умеешь?"],
             ],
             rows,
         )
@@ -234,6 +243,70 @@ class TelegramUXTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Шаги: 6 400 из 10 000", screen.text)
         self.assertIn("Силовая тренировка A", screen.text)
         self.assertEqual("task", screen.primary_entity["type"])
+
+    async def test_planner_shows_today_tomorrow_and_week_without_moving_tasks(self):
+        async with self.sessions() as session:
+            scheduled = Task(
+                user_id=1,
+                title="Отправить документы",
+                scheduled_start=self.now.replace(hour=11),
+                scheduled_end=self.now.replace(hour=11, minute=30),
+            )
+            deadline = Task(
+                user_id=1,
+                title="Позвонить врачу",
+                deadline=self.now.replace(hour=16) + timedelta(days=1),
+            )
+            planned = Task(user_id=1, title="Подготовить отчёт")
+            undated = Task(user_id=1, title="Купить батарейки")
+            session.add_all([scheduled, deadline, planned, undated])
+            await session.flush()
+            session.add_all([
+                TaskPlanBlock(
+                    user_id=1,
+                    task_id=planned.id,
+                    plan_date=(self.now + timedelta(days=3)).date(),
+                    start_at=self.now.replace(hour=9) + timedelta(days=3),
+                    end_at=self.now.replace(hour=10) + timedelta(days=3),
+                    planned_minutes=60,
+                ),
+                Reminder(
+                    user_id=1,
+                    text="Забрать заказ",
+                    remind_at=self.now.replace(hour=18, minute=20),
+                ),
+                CalendarEvent(
+                    user_id=1,
+                    external_id="doctor",
+                    title="Приём у врача",
+                    start_at=self.now.replace(hour=12) + timedelta(days=1),
+                    end_at=self.now.replace(hour=13) + timedelta(days=1),
+                ),
+                WorkoutSession(
+                    user_id=1,
+                    title="Силовая тренировка",
+                    scheduled_for=self.now.replace(hour=8) + timedelta(days=4),
+                ),
+            ])
+            await session.commit()
+
+        async with self.sessions() as session:
+            today = await self.service.planner(session, 1, self.now, "today")
+            tomorrow = await self.service.planner(session, 1, self.now, "tomorrow")
+            week = await self.service.planner(session, 1, self.now, "week")
+            persisted = await session.get(Task, scheduled.id)
+
+        self.assertIn("Планнер · сегодня", today.text)
+        self.assertIn("11:00–11:30 · Отправить документы", today.text)
+        self.assertIn("🔔 18:20 · Забрать заказ", today.text)
+        self.assertNotIn("Позвонить врачу", today.text)
+        self.assertIn("Планнер · завтра", tomorrow.text)
+        self.assertIn("📅 12:00–13:00 · Приём у врача", tomorrow.text)
+        self.assertIn("до 16:00 · Позвонить врачу", tomorrow.text)
+        self.assertIn("09:00–10:00 · Подготовить отчёт", week.text)
+        self.assertIn("🏋️ 08:00 · Силовая тренировка", week.text)
+        self.assertIn("Без даты и времени: 1", week.text)
+        self.assertEqual(self.now.replace(hour=11), persisted.scheduled_start.replace(tzinfo=self.tz))
 
     async def test_recovery_plan_keeps_real_important_task(self):
         async with self.sessions() as session:
