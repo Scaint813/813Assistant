@@ -1,4 +1,4 @@
-from aiogram.types import KeyboardButton, ReplyKeyboardMarkup, WebAppInfo
+from aiogram.types import KeyboardButton, ReplyKeyboardMarkup
 
 # Texts used as navigation guards in quick_note.py. Legacy labels stay here so
 # an old persistent Telegram keyboard cannot accidentally create a task.
@@ -17,26 +17,17 @@ MENU_TEXTS = {
 }
 
 
-def main_menu(mini_app_url: str = "") -> ReplyKeyboardMarkup:
-    keyboard = []
-    if mini_app_url:
-        keyboard.append([
-            KeyboardButton(
-                text="Управление",
-                web_app=WebAppInfo(url=mini_app_url),
-            )
-        ])
+def main_menu() -> ReplyKeyboardMarkup:
     rows = [
         ["Что у меня сегодня?", "Планнер"],
         ["Покажи все дела", "Профиль"],
         ["Что ты умеешь?"],
     ]
-    keyboard.extend(
-        [KeyboardButton(text=text) for text in row]
-        for row in rows
-    )
     return ReplyKeyboardMarkup(
-        keyboard=keyboard,
+        keyboard=[
+            [KeyboardButton(text=text) for text in row]
+            for row in rows
+        ],
         resize_keyboard=True,
         is_persistent=True,
         input_field_placeholder="Напиши или скажи, что нужно…",

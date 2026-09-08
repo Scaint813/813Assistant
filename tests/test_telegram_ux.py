@@ -51,16 +51,6 @@ class TelegramUXTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("Штаб", {item for row in rows for item in row})
         self.assertNotIn("Следующий шаг", {item for row in rows for item in row})
 
-    def test_main_keyboard_adds_mini_app_control_when_configured(self):
-        keyboard = main_menu("https://assistant.example.com/app/")
-
-        self.assertEqual("Управление", keyboard.keyboard[0][0].text)
-        self.assertEqual(
-            "https://assistant.example.com/app/",
-            keyboard.keyboard[0][0].web_app.url,
-        )
-        self.assertTrue(keyboard.is_persistent)
-
     async def test_confirmed_chat_cleanup_uses_bounded_telegram_batches(self):
         class FakeBot:
             def __init__(self):
