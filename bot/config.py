@@ -50,6 +50,10 @@ class Config:
     health_nudge_time: time
     default_step_goal: int
     health_min_step_gap: int
+    hse_ical_sync_enabled: bool
+    hse_ical_url: str
+    hse_ical_sync_interval_minutes: int
+    default_transfer_buffer_minutes: int
     reliability_enabled: bool
     backup_dir: str
     backup_retention_days: int
@@ -143,6 +147,15 @@ def get_config() -> Config:
         health_nudge_time=_parse_time("HEALTH_NUDGE_TIME", "18:00"),
         default_step_goal=int(os.getenv("DEFAULT_STEP_GOAL", "10000")),
         health_min_step_gap=int(os.getenv("HEALTH_MIN_STEP_GAP", "1000")),
+        hse_ical_sync_enabled=os.getenv("HSE_ICAL_SYNC_ENABLED", "false").lower()
+        == "true",
+        hse_ical_url=os.getenv("HSE_ICAL_URL", ""),
+        hse_ical_sync_interval_minutes=int(
+            os.getenv("HSE_ICAL_SYNC_INTERVAL_MINUTES", "60")
+        ),
+        default_transfer_buffer_minutes=int(
+            os.getenv("DEFAULT_TRANSFER_BUFFER_MINUTES", "45")
+        ),
         reliability_enabled=os.getenv("RELIABILITY_ENABLED", "true").lower() == "true",
         backup_dir=os.getenv("BACKUP_DIR", "./backups"),
         backup_retention_days=int(os.getenv("BACKUP_RETENTION_DAYS", "14")),

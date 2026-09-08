@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, time, timedelta
 from html import escape
 from typing import ClassVar
 
@@ -46,19 +47,67 @@ class ConversationReply:
 
 class ConversationService:
     QUERY_TYPES: ClassVar[frozenset[str]] = frozenset({
-        "show_today", "show_tomorrow", "show_week", "show_tasks", "show_reminders", "show_projects",
+        "show_today", "show_tomorrow", "show_week", "show_daily_brief", "show_day_review",
+        "show_conflicts",
+        "show_tasks", "show_reminders", "show_projects",
         "show_inbox", "show_help", "show_weekly_review", "show_next",
         "pick_task", "plan_day",
         "show_problem_blocks",
         "show_archive", "show_study", "show_automations", "show_settings",
     })
 
-    def __init__(self, assistant_ux_service, project_service, next_step_service):
+    def __init__(
+        self,
+        assistant_ux_service,
+        project_service,
+        next_step_service,
+        *,
+        daily_brief_service=None,
+        conflict_service=None,
+    ):
         self.assistant_ux_service = assistant_ux_service
         self.project_service = project_service
         self.next_step_service = next_step_service
+        self.daily_brief_service = daily_brief_service
+        self.conflict_service = conflict_service
 
     async def answer(self, session, user_id: int, intent_type: str, now) -> ConversationReply | None:
+        if intent_type == "show_daily_brief":
+            if self.daily_brief_service is None:
+                screen = await self.assistant_ux_service.today(
+                    session, user_id, now
+                )
+                return ConversationReply(screen.text)
+            from bot.keyboards.inline import daily_brief_keyboard
+
+            return ConversationReply(
+                await self.daily_brief_service.build(session, user_id, now),
+                daily_brief_keyboard(),
+            )
+        if intent_type == "show_day_review":
+            if self.daily_brief_service is None:
+                return ConversationReply("Итоги дня пока недоступны.")
+            from bot.keyboards.inline import daily_brief_keyboard
+
+            return ConversationReply(
+                await self.daily_brief_service.build_review(
+                    session, user_id, now
+                ),
+                daily_brief_keyboard(),
+            )
+        if intent_type == "show_conflicts":
+            if self.conflict_service is None:
+                return ConversationReply("Проверка конфликтов пока недоступна.")
+            start = datetime.combine(now.date(), time.min, tzinfo=now.tzinfo)
+            conflicts = await self.conflict_service.detect_between(
+                session, user_id, start, start + timedelta(days=1)
+            )
+            from bot.keyboards.inline import planner_keyboard
+
+            return ConversationReply(
+                self.conflict_service.render(conflicts, now.tzinfo),
+                planner_keyboard("today"),
+            )
         if intent_type == "show_today":
             screen = await self.assistant_ux_service.today(session, user_id, now)
             if screen.primary_entity:

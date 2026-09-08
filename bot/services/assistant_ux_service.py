@@ -342,12 +342,16 @@ class AssistantUXService:
                     end if event_day == end.date()
                     else datetime.combine(event_day, time.max, tzinfo=now.tzinfo)
                 )
+                place = (
+                    f" · {self._short_text(event.location, 55)}"
+                    if event.location else ""
+                )
                 add_entry(
                     event_day,
                     shown_start,
                     10,
                     f"📅 {shown_start.strftime('%H:%M')}–{shown_end.strftime('%H:%M')} · "
-                    f"{self._short_text(event.title)}",
+                    f"{self._short_text(event.title)}{place}",
                 )
                 event_day += timedelta(days=1)
 

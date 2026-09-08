@@ -47,6 +47,9 @@ SYSTEM_PROMPT = """
   show_today
   show_tomorrow
   show_week
+  show_daily_brief
+  show_day_review
+  show_conflicts
   show_tasks
   show_reminders
   show_projects
@@ -134,6 +137,9 @@ SYSTEM_PROMPT = """
 
 13. Пользователь НЕ обязан помнить команды. Понимай естественные формулировки:
     «что у меня сегодня» → show_today; «что у меня завтра» → show_tomorrow;
+    «сводка дня» / «что важно сегодня» → show_daily_brief;
+    «подведи итоги дня» / «вечерняя сводка» → show_day_review;
+    «покажи конфликты в расписании» / «есть ли накладки» → show_conflicts;
     «покажи расписание на неделю» → show_week; «покажи все дела» → show_tasks;
     «покажи напоминания» → show_reminders; «покажи проекты» → show_projects;
     «разберём входящие» → show_inbox; «что ты умеешь» → show_help;
@@ -176,7 +182,8 @@ class TaskStep(BaseModel):
 class Intent(BaseModel):
     type: Literal[
         "create_task", "create_reminder", "rest_day", "schedule_override",
-        "show_today", "show_tomorrow", "show_week", "show_tasks", "do_nothing",
+        "show_today", "show_tomorrow", "show_week", "show_daily_brief",
+        "show_day_review", "show_conflicts", "show_tasks", "do_nothing",
         "show_reminders", "show_projects", "show_inbox", "show_help",
         "show_weekly_review", "show_next", "pick_task", "plan_day",
         "show_archive", "show_study", "show_automations", "show_settings",
@@ -520,6 +527,21 @@ class AIService:
                     "Ничего не сохраняю. Напиши, что именно сработало неправильно."
                 ),
             }
+
+        if any(p in lowered for p in (
+            "сводка дня", "утренняя сводка", "что важно сегодня",
+            "главное на сегодня",
+        )):
+            return {"intents": [{"type": "show_daily_brief"}]}
+        if any(p in lowered for p in (
+            "подведи итоги дня", "итоги дня", "вечерняя сводка",
+        )):
+            return {"intents": [{"type": "show_day_review"}]}
+        if any(p in lowered for p in (
+            "покажи конфликты", "конфликты в расписании", "есть ли накладки",
+            "проверь накладки", "проверь пересечения",
+        )):
+            return {"intents": [{"type": "show_conflicts"}]}
 
         if AIService._looks_like_day_plan_query(lowered):
             return {"intents": [{"type": "plan_day"}]}

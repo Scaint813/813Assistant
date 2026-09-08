@@ -55,6 +55,12 @@ _MIGRATIONS: list[tuple[str, str, str]] = [
     ("workout_sessions", "source", "TEXT NOT NULL DEFAULT 'generated'"),
     ("workout_sessions", "started_at", "DATETIME"),
     ("workout_sessions", "current_exercise_index", "INTEGER NOT NULL DEFAULT 0"),
+    ("calendar_events", "event_type", "TEXT NOT NULL DEFAULT ''"),
+    ("calendar_events", "description", "TEXT NOT NULL DEFAULT ''"),
+    ("calendar_events", "location", "TEXT NOT NULL DEFAULT ''"),
+    ("calendar_events", "teacher", "TEXT NOT NULL DEFAULT ''"),
+    ("calendar_events", "building", "TEXT NOT NULL DEFAULT ''"),
+    ("calendar_events", "room", "TEXT NOT NULL DEFAULT ''"),
 ]
 
 

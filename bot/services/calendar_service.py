@@ -27,7 +27,7 @@ class CalendarService:
         raw_events = payload.get("events") or []
         source = str(payload.get("source") or "shortcut")[:32]
         parsed: list[dict] = []
-        for index, raw in enumerate(raw_events[:500]):
+        for index, raw in enumerate(raw_events[:5000]):
             try:
                 start_at = self._parse_datetime(raw.get("start_at") or raw.get("start"))
                 end_at = self._parse_datetime(raw.get("end_at") or raw.get("end"))
@@ -39,12 +39,25 @@ class CalendarService:
                 "external_id": str(raw.get("id") or f"{source}:{start_at.isoformat()}:{index}")[:255],
                 "calendar_name": str(raw.get("calendar") or "Основной")[:128],
                 "title": str(raw.get("title") or "Занято")[:255],
+                "event_type": str(raw.get("event_type") or raw.get("type") or "")[:32],
+                "description": str(raw.get("description") or "")[:4000],
+                "location": str(raw.get("location") or "")[:255],
+                "teacher": str(raw.get("teacher") or "")[:255],
+                "building": str(raw.get("building") or "")[:255],
+                "room": str(raw.get("room") or "")[:64],
                 "start_at": start_at,
                 "end_at": end_at,
                 "is_busy": bool(raw.get("is_busy", True)),
             })
 
-        if parsed:
+        if parsed and payload.get("replace_all"):
+            await session.execute(
+                delete(CalendarEvent).where(
+                    CalendarEvent.user_id == user_id,
+                    CalendarEvent.source == source,
+                )
+            )
+        elif parsed:
             start = min(row["start_at"] for row in parsed) - timedelta(days=1)
             end = max(row["end_at"] for row in parsed) + timedelta(days=1)
             await session.execute(
@@ -72,7 +85,15 @@ class CalendarService:
         )
         return list(result.scalars().all())
 
-    async def build_day_plan(self, session, user_id: int, now: datetime, day: date | None = None) -> dict:
+    async def build_day_plan(
+        self,
+        session,
+        user_id: int,
+        now: datetime,
+        day: date | None = None,
+        *,
+        persist_schedule: bool = True,
+    ) -> dict:
         day = day or now.date()
         tz = now.tzinfo
         planning = await self._planning_preferences(session, user_id)
@@ -108,10 +129,11 @@ class CalendarService:
             task.id,
         ))
 
-        for task in all_tasks:
-            if task.scheduled_start and ensure_aware(task.scheduled_start, tz).date() == day:
-                task.scheduled_start = None
-                task.scheduled_end = None
+        if persist_schedule:
+            for task in all_tasks:
+                if task.scheduled_start and ensure_aware(task.scheduled_start, tz).date() == day:
+                    task.scheduled_start = None
+                    task.scheduled_end = None
 
         timeboxes = []
         unscheduled = []
@@ -142,8 +164,9 @@ class CalendarService:
             start_at, end_at = slot
             duration = int((end_at - start_at).total_seconds() // 60)
             focus_remaining = max(0, focus_remaining - duration)
-            task.scheduled_start = start_at
-            task.scheduled_end = end_at
+            if persist_schedule:
+                task.scheduled_start = start_at
+                task.scheduled_end = end_at
             remaining_minutes = max(0, total_minutes - duration)
             box = {
                 "task": task,
@@ -166,7 +189,8 @@ class CalendarService:
                     "estimated_days": ceil(remaining_minutes / daily_minutes),
                 })
 
-        await session.flush()
+        if persist_schedule:
+            await session.flush()
         calendar_remaining_minutes = self._interval_minutes(free)
         remaining_minutes = focus_remaining
         return {
@@ -253,7 +277,11 @@ class CalendarService:
             return []
         free: list[list[datetime]] = []
         cursor = start
-        for event in events:
+        ordered_events = sorted(
+            events,
+            key=lambda item: ensure_aware(item.start_at, tz),
+        )
+        for event in ordered_events:
             event_start = max(start, ensure_aware(event.start_at, tz))
             event_end = min(end, ensure_aware(event.end_at, tz))
             if event_end <= cursor:

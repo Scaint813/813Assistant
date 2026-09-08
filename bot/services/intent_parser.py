@@ -25,7 +25,8 @@ from bot.services.time_service import TimeService
 
 _ALLOWED_INTENT_TYPES = {
     "create_task", "create_reminder", "rest_day", "schedule_override",
-    "show_today", "show_tomorrow", "show_week", "show_tasks", "do_nothing",
+    "show_today", "show_tomorrow", "show_week", "show_daily_brief",
+    "show_day_review", "show_conflicts", "show_tasks", "do_nothing",
     "show_reminders", "show_projects", "show_inbox", "show_help",
     "show_weekly_review", "show_next", "pick_task", "plan_day",
     "show_archive", "show_study", "show_automations", "show_settings",
@@ -473,6 +474,27 @@ class IntentParser:
     def _deterministic_query_type(text: str) -> str | None:
         """Protect read-only planning phrases from being turned into mutations by AI."""
         lowered = text.casefold().strip()
+        if any(phrase in lowered for phrase in (
+            "сводка дня",
+            "утренняя сводка",
+            "что важно сегодня",
+            "главное на сегодня",
+        )):
+            return "show_daily_brief"
+        if any(phrase in lowered for phrase in (
+            "подведи итоги дня",
+            "итоги дня",
+            "вечерняя сводка",
+        )):
+            return "show_day_review"
+        if any(phrase in lowered for phrase in (
+            "покажи конфликты",
+            "конфликты в расписании",
+            "есть ли накладки",
+            "проверь накладки",
+            "проверь пересечения",
+        )):
+            return "show_conflicts"
         if AIService._looks_like_day_plan_query(lowered):
             return "plan_day"
         if any(phrase in lowered for phrase in (

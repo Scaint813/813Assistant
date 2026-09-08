@@ -129,6 +129,9 @@ class ConversationalUXTests(unittest.IsolatedAsyncioTestCase):
             "Что у меня завтра?": "show_tomorrow",
             "Покажи расписание на неделю": "show_week",
             "Составь план на неделю": "show_week",
+            "Что важно сегодня?": "show_daily_brief",
+            "Подведи итоги дня": "show_day_review",
+            "Есть ли накладки в расписании?": "show_conflicts",
         }
         for phrase, expected in cases.items():
             with self.subTest(phrase=phrase):

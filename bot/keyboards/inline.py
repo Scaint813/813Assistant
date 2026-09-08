@@ -290,8 +290,25 @@ def planner_keyboard(period: str = "today") -> InlineKeyboardMarkup:
             for label, value in labels
         ],
         [
+            InlineKeyboardButton(text="Сводка дня", callback_data="daily_brief"),
+            InlineKeyboardButton(text="Конфликты", callback_data="daily_conflicts"),
+        ],
+        [
             InlineKeyboardButton(text="Все задачи", callback_data="nav_tasks"),
             InlineKeyboardButton(text="Напоминания", callback_data="nav_reminders"),
+        ],
+    ])
+
+
+def daily_brief_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="Планнер", callback_data="planner:today"),
+            InlineKeyboardButton(text="Конфликты", callback_data="daily_conflicts"),
+        ],
+        [
+            InlineKeyboardButton(text="Обновить", callback_data="daily_brief"),
+            InlineKeyboardButton(text="Итоги дня", callback_data="daily_review"),
         ],
     ])
 

@@ -13,6 +13,7 @@ from bot.config import get_config
 from bot.database.migrations import configure_engine, create_schema
 from bot.database.queries import get_or_create_runtime_state
 from bot.handlers import (
+    academic,
     domains,
     menu,
     operations,
@@ -32,12 +33,15 @@ from bot.services.assistant_ux_service import AssistantUXService
 from bot.services.calendar_service import CalendarService
 from bot.services.checkin_service import CheckinService
 from bot.services.cleanup_service import CleanupService
+from bot.services.conflict_service import ConflictService, RouteTimeEstimator
 from bot.services.conversation_repair_service import ConversationRepairService
 from bot.services.conversation_service import ConversationService
+from bot.services.daily_brief_service import DailyBriefService
 from bot.services.day_planning_service import DayPlanningService
 from bot.services.focus_service import FocusService
 from bot.services.health_bridge import HealthBridgeServer
 from bot.services.health_service import HealthService
+from bot.services.hse_calendar_service import HSECalendarService
 from bot.services.intent_parser import IntentParser
 from bot.services.metric_service import MetricService
 from bot.services.miro_service import MiroService
@@ -92,6 +96,8 @@ async def main() -> None:
             BotCommand(command="start", description="Начать или обновить подсказки"),
             BotCommand(command="help", description="Примеры обычных фраз"),
             BotCommand(command="settings", description="Настройки ассистента"),
+            BotCommand(command="brief", description="Сводка дня"),
+            BotCommand(command="hse_status", description="Статус расписания ВШЭ"),
         ])
     except Exception:
         log.exception("Could not update the compact Telegram command menu")
@@ -102,6 +108,7 @@ async def main() -> None:
 
     # ── 5. Handlers ────────────────────────────────────────────────────────
     dp.include_router(start.router)
+    dp.include_router(academic.router)
     dp.include_router(health_handler.router)
     dp.include_router(settings_handler.router)
     dp.include_router(productivity.router)
@@ -118,6 +125,20 @@ async def main() -> None:
     user_profile_service = UserProfileService(cfg.timezone)
     calendar_service = CalendarService(time_service)
     day_planning_service = DayPlanningService(calendar_service)
+    route_time_estimator = RouteTimeEstimator(
+        cfg.default_transfer_buffer_minutes
+    )
+    conflict_service = ConflictService(route_time_estimator)
+    daily_brief_service = DailyBriefService(calendar_service, conflict_service)
+    hse_calendar_service = HSECalendarService(
+        calendar_service,
+        session_factory,
+        time_service,
+        cfg.allowed_user_id,
+        feed_url=cfg.hse_ical_url,
+        enabled=cfg.hse_ical_sync_enabled,
+        sync_interval_minutes=cfg.hse_ical_sync_interval_minutes,
+    )
     ai_service = AIService(
         cfg.openai_api_key,
         cfg.openai_model_fast,
@@ -142,6 +163,13 @@ async def main() -> None:
     )
     await reminder_scheduler.start_scheduler()
     log.info("APScheduler started")
+    hse_sync_scheduled = hse_calendar_service.schedule(
+        reminder_scheduler.scheduler
+    )
+    log.info(
+        "HSE iCal periodic sync: %s",
+        "enabled" if hse_sync_scheduled else "disabled; .ics upload remains available",
+    )
 
     # Создаём preference до регистрации check-in jobs. На чистой БД значение
     # берётся из env; дальше им управляет пользовательская кнопка без рестарта.
@@ -188,7 +216,11 @@ async def main() -> None:
     assistant_ux_service = AssistantUXService(task_prioritization_service, calendar_service)
     project_service = ProjectService()
     conversation_service = ConversationService(
-        assistant_ux_service, project_service, next_step_service
+        assistant_ux_service,
+        project_service,
+        next_step_service,
+        daily_brief_service=daily_brief_service,
+        conflict_service=conflict_service,
     )
     training_service = TrainingService(calendar_service)
     health_service = HealthService(
@@ -264,6 +296,9 @@ async def main() -> None:
     dp["focus_service"] = focus_service
     dp["calendar_service"] = calendar_service
     dp["day_planning_service"] = day_planning_service
+    dp["conflict_service"] = conflict_service
+    dp["daily_brief_service"] = daily_brief_service
+    dp["hse_calendar_service"] = hse_calendar_service
     dp["task_prioritization_service"] = task_prioritization_service
     dp["assistant_ux_service"] = assistant_ux_service
     dp["project_service"] = project_service
