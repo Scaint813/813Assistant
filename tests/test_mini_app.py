@@ -289,11 +289,11 @@ class MiniAppAPITests(unittest.IsolatedAsyncioTestCase):
             json={
                 "token": CALENDAR_TOKEN,
                 "events": [[{
-                    "id": "nested-ios-event",
-                    "title": "Событие из вложенного массива Shortcuts",
-                    "start": "2026-09-09T13:00:00+03:00",
-                    "end": "2026-09-09T14:20:00+03:00",
-                    "calendar": "HSE",
+                    "идентификатор": "nested-ios-event",
+                    "название": "Событие из вложенного массива Shortcuts",
+                    "начало": "2026-09-09T13:00:00+03:00",
+                    "окончание": "2026-09-09T14:20:00+03:00",
+                    "календарь": "HSE",
                 }]],
             },
         )

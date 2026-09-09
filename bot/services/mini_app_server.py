@@ -600,46 +600,74 @@ class MiniAppServer:
         # Treat that dictionary exactly like a one-element event list.
         if isinstance(raw_events, dict):
             raw_events = [raw_events]
-        # When an Events list is inserted into an Array field, Shortcuts wraps
-        # it in one more list. Unwrap that harmless single-item container.
-        while (
-            isinstance(raw_events, list)
-            and len(raw_events) == 1
-            and isinstance(raw_events[0], list)
-        ):
-            raw_events = raw_events[0]
         if not isinstance(raw_events, list):
             raise web.HTTPBadRequest(reason="events must be a list or object")
+
+        # An Array field containing a list variable becomes a nested list in
+        # Shortcuts. It can also stringify individual dictionary items. Flatten
+        # both representations before validating the event fields.
+        pending = list(reversed(raw_events))
+        raw_events = []
+        visited = 0
+        while pending:
+            visited += 1
+            if visited > 4_000:
+                raise web.HTTPBadRequest(reason="too many event values")
+            item = pending.pop()
+            if isinstance(item, list):
+                pending.extend(reversed(item))
+                continue
+            if isinstance(item, str):
+                try:
+                    decoded_item = json.loads(item)
+                except json.JSONDecodeError:
+                    decoded_item = None
+                if isinstance(decoded_item, (dict, list)):
+                    pending.append(decoded_item)
+                    continue
+            raw_events.append(item)
         if len(raw_events) > 2_000:
             raise web.HTTPBadRequest(reason="too many events")
 
         normalized_events = []
         ignored = 0
+        rejection_reasons: dict[str, int] = {}
+
+        def reject(reason: str) -> None:
+            nonlocal ignored
+            ignored += 1
+            rejection_reasons[reason] = rejection_reasons.get(reason, 0) + 1
+
         for raw in raw_events:
             if not isinstance(raw, dict):
-                ignored += 1
+                reject(f"not_object:{type(raw).__name__}")
                 continue
             values = self._normalized_shortcut_keys(raw)
             calendar_name = str(
                 values.get("calendar") or values.get("calendar_name") or ""
             ).strip()
             if calendar_name.casefold() != "hse":
-                ignored += 1
+                reject("calendar")
                 continue
             title = " ".join(str(values.get("title") or "").split())
             start = values.get("start") or values.get("start_date")
             end = values.get("end") or values.get("end_date")
-            if not title or not start or not end:
-                ignored += 1
+            missing = [
+                field
+                for field, value in (("title", title), ("start", start), ("end", end))
+                if not value
+            ]
+            if missing:
+                reject("missing_" + "_".join(missing))
                 continue
             try:
                 start_at = self.calendar_service._parse_datetime(start)
                 end_at = self.calendar_service._parse_datetime(end)
             except (TypeError, ValueError):
-                ignored += 1
+                reject("invalid_date")
                 continue
             if end_at <= start_at:
-                ignored += 1
+                reject("invalid_range")
                 continue
 
             notes = str(
@@ -676,8 +704,22 @@ class MiniAppServer:
             })
 
         if raw_events and not normalized_events:
+            diagnostic = ", ".join(
+                f"{reason}={count}"
+                for reason, count in sorted(rejection_reasons.items())
+            ) or "empty"
+            logger.warning(
+                "HSE Shortcut payload rejected: user=%s reasons=%s keys=%s",
+                request["user_id"],
+                diagnostic,
+                [
+                    sorted(self._normalized_shortcut_keys(item))
+                    for item in raw_events[:3]
+                    if isinstance(item, dict)
+                ],
+            )
             raise web.HTTPBadRequest(
-                reason="no valid events from the HSE calendar"
+                reason=f"no valid HSE events: {diagnostic}"
             )
         async with self.session_factory() as session:
             saved = await self.calendar_service.replace_events(
@@ -705,10 +747,26 @@ class MiniAppServer:
 
     @staticmethod
     def _normalized_shortcut_keys(raw: dict) -> dict:
-        return {
-            re.sub(r"[^a-z0-9]+", "_", str(key).casefold()).strip("_"): value
-            for key, value in raw.items()
+        aliases = {
+            "идентификатор": "id",
+            "название": "title",
+            "имя": "title",
+            "начало": "start",
+            "дата_начала": "start",
+            "окончание": "end",
+            "конец": "end",
+            "дата_окончания": "end",
+            "календарь": "calendar",
+            "геопозиция": "location",
+            "местоположение": "location",
+            "заметки": "notes",
+            "примечания": "notes",
         }
+        normalized = {}
+        for key, value in raw.items():
+            name = re.sub(r"[^\w]+", "_", str(key).casefold()).strip("_")
+            normalized[aliases.get(name, name)] = value
+        return normalized
 
     @staticmethod
     def _teacher_from_hse_title(title: str) -> str:
