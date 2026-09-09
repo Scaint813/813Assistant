@@ -600,6 +600,14 @@ class MiniAppServer:
         # Treat that dictionary exactly like a one-element event list.
         if isinstance(raw_events, dict):
             raw_events = [raw_events]
+        # When an Events list is inserted into an Array field, Shortcuts wraps
+        # it in one more list. Unwrap that harmless single-item container.
+        while (
+            isinstance(raw_events, list)
+            and len(raw_events) == 1
+            and isinstance(raw_events[0], list)
+        ):
+            raw_events = raw_events[0]
         if not isinstance(raw_events, list):
             raise web.HTTPBadRequest(reason="events must be a list or object")
         if len(raw_events) > 2_000:
