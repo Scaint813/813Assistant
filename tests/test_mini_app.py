@@ -133,8 +133,23 @@ class MiniAppAPITests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('class="bottom-nav"', html)
         self.assertIn('data-view="planner"', html)
         self.assertIn('data-view="tasks"', html)
+        self.assertIn("assets/resource_store.js", html)
         self.assertIn("https://telegram.org/js/telegram-web-app.js", html)
         self.assertIn("frame-ancestors", response.headers["Content-Security-Policy"])
+
+        resource_response = await self.client.get("/assets/resource_store.js")
+        self.assertEqual(200, resource_response.status)
+
+    async def test_empty_today_is_a_successful_ready_state(self):
+        response = await self.client.get(
+            "/api/v1/state?period=today",
+            headers=self.headers,
+        )
+        payload = await response.json()
+
+        self.assertEqual(200, response.status)
+        self.assertEqual([], payload["timeline"])
+        self.assertEqual(0, payload["stats"]["events"])
 
     async def test_api_requires_telegram_authorization(self):
         response = await self.client.get("/api/v1/state")

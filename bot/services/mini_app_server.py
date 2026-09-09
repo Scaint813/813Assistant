@@ -231,7 +231,7 @@ class MiniAppServer:
         return response
 
     async def _asset(self, request: web.Request) -> web.StreamResponse:
-        allowed = {"app.css", "app.js"}
+        allowed = {"app.css", "app.js", "resource_store.js"}
         name = request.match_info["name"]
         if name not in allowed:
             raise web.HTTPNotFound()

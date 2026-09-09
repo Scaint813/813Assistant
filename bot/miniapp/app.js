@@ -5,11 +5,8 @@
   const state = {
     view: "today",
     period: "today",
-    schedules: {},
-    profile: null,
     shortcutConfig: null,
     timezone: undefined,
-    busy: false,
   };
   const titles = { today: "Сегодня", planner: "Планнер", tasks: "Задачи", profile: "Профиль" };
   const periods = { today: "Сегодня", tomorrow: "Завтра", week: "Неделя" };
@@ -27,6 +24,12 @@
     form: document.querySelector("#task-form"),
     toast: document.querySelector("#toast"),
   };
+  const resources = new window.MiniAppResourceStore(
+    loadResource,
+    (key) => {
+      if (key === currentResourceKey()) render();
+    },
+  );
 
   function initializeTelegram() {
     if (!tg) return;
@@ -49,18 +52,42 @@
   }
 
   async function api(path, options = {}) {
-    const response = await fetch(path, {
-      ...options,
-      headers: { ...apiHeaders(Boolean(options.body) && !(options.body instanceof Blob)), ...(options.headers || {}) },
-    });
-    let payload = {};
-    try { payload = await response.json(); } catch (_error) { /* empty response */ }
-    if (!response.ok) {
-      const error = new Error(payload.error || `Ошибка ${response.status}`);
-      error.status = response.status;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10000);
+    try {
+      const response = await fetch(path, {
+        ...options,
+        signal: controller.signal,
+        headers: { ...apiHeaders(Boolean(options.body) && !(options.body instanceof Blob)), ...(options.headers || {}) },
+      });
+      let payload = {};
+      try { payload = await response.json(); } catch (_error) { /* empty response */ }
+      if (!response.ok) {
+        const error = new Error(payload.error || `Ошибка ${response.status}`);
+        error.status = response.status;
+        throw error;
+      }
+      return payload;
+    } catch (error) {
+      if (error.name === "AbortError") {
+        const timeoutError = new Error("Раздел не ответил за 10 секунд. Попробуй ещё раз.");
+        timeoutError.status = 408;
+        throw timeoutError;
+      }
       throw error;
+    } finally {
+      clearTimeout(timeout);
     }
-    return payload;
+  }
+
+  function scheduleKey(period) { return `schedule:${period}`; }
+  function currentResourceKey() {
+    if (state.view === "profile") return "profile";
+    return scheduleKey(state.view === "planner" ? state.period : "today");
+  }
+  function loadResource(key) {
+    if (key === "profile") return api("api/v1/profile");
+    return api(`api/v1/state?period=${key.slice("schedule:".length)}`);
   }
 
   function escapeHTML(value) {
@@ -155,12 +182,16 @@
     </section>`).join("");
   }
 
-  function renderPlanner(data) {
+  function periodControlHTML() {
     return `<div class="segment-control" role="tablist" aria-label="Период расписания">
       ${Object.entries(periods).map(([key, label]) => `<button type="button" role="tab" data-period="${key}" class="${state.period === key ? "active" : ""}" aria-selected="${state.period === key}">${label}</button>`).join("")}
-    </div>
-    ${data.conflicts.length ? `<div class="notice danger"><strong>Найдено конфликтов: ${data.conflicts.length}.</strong> События пересекаются или между ними мало времени на дорогу.</div>` : ""}
-    ${dayGroupsHTML(data)}`;
+    </div>`;
+  }
+
+  function renderPlanner(data) {
+    return `${periodControlHTML()}
+      ${data.conflicts.length ? `<div class="notice danger"><strong>Найдено конфликтов: ${data.conflicts.length}.</strong> События пересекаются или между ними мало времени на дорогу.</div>` : ""}
+      ${dayGroupsHTML(data)}`;
   }
 
   function renderTasks(data) {
@@ -216,9 +247,27 @@
       <p class="secret-warning">Токен даёт доступ только к загрузке календаря HSE. Не отправляй его в чат и не добавляй в ссылку.</p>`;
   }
 
-  function currentSchedule() { return state.schedules[state.view === "planner" ? state.period : "today"]; }
+  function resourceStatusHTML(entry) {
+    if (entry.error) {
+      const message = entry.error.status === 401
+        ? "Открой Mini App кнопкой «Управление» в чате с ботом."
+        : entry.error.message;
+      return `<section class="status-screen section-status" aria-live="polite">
+        <span class="status-symbol" aria-hidden="true">!</span>
+        <h2>Раздел временно недоступен</h2>
+        <p>${escapeHTML(message)}</p>
+        <button class="primary-button" data-retry-current type="button">Повторить</button>
+      </section>`;
+    }
+    return `<section class="status-screen section-status" aria-live="polite">
+      <span class="loader" aria-hidden="true"></span>
+      <p>Открываю только этот раздел…</p>
+    </section>`;
+  }
 
   function render() {
+    const key = currentResourceKey();
+    const entry = resources.get(key);
     els.title.textContent = titles[state.view];
     document.querySelectorAll(".nav-item").forEach((button) => {
       const active = button.dataset.view === state.view;
@@ -226,30 +275,31 @@
       button.setAttribute("aria-current", active ? "page" : "false");
     });
     els.add.classList.toggle("hidden", state.view === "profile");
-    if (state.view === "profile") {
-      state.timezone = state.profile.timezone;
-      els.view.innerHTML = renderProfile(state.profile);
-    } else {
-      const schedule = currentSchedule();
-      state.timezone = schedule.user.timezone;
-      els.date.textContent = formatDate(schedule.now, { weekday: "long", day: "numeric", month: "long" });
-      if (state.view === "planner") els.view.innerHTML = renderPlanner(schedule);
-      else if (state.view === "tasks") els.view.innerHTML = renderTasks(schedule);
-      else els.view.innerHTML = renderToday(schedule);
-    }
-    bindViewActions();
-  }
-
-  function showContent() {
+    els.refresh.classList.toggle("spinning", entry.loading);
     els.loading.classList.add("hidden");
     els.error.classList.add("hidden");
     els.view.classList.remove("hidden");
-  }
-  function showError(error) {
-    els.loading.classList.add("hidden");
-    els.view.classList.add("hidden");
-    els.error.classList.remove("hidden");
-    els.errorMessage.textContent = error.status === 401 ? "Открой планнер кнопкой «Управление» в чате с ботом." : error.message;
+    if (state.view === "profile") {
+      els.date.textContent = "Настройки";
+      if (entry.data === null) {
+        els.view.innerHTML = resourceStatusHTML(entry);
+      } else {
+        state.timezone = entry.data.timezone;
+        els.view.innerHTML = renderProfile(entry.data);
+      }
+    } else {
+      if (entry.data === null) {
+        els.view.innerHTML = `${state.view === "planner" ? periodControlHTML() : ""}${resourceStatusHTML(entry)}`;
+      } else {
+        const schedule = entry.data;
+        state.timezone = schedule.user.timezone;
+        els.date.textContent = formatDate(schedule.now, { weekday: "long", day: "numeric", month: "long" });
+        if (state.view === "planner") els.view.innerHTML = renderPlanner(schedule);
+        else if (state.view === "tasks") els.view.innerHTML = renderTasks(schedule);
+        else els.view.innerHTML = renderToday(schedule);
+      }
+    }
+    bindViewActions();
   }
   function toast(message) {
     els.toast.textContent = message;
@@ -258,42 +308,37 @@
     toast.timer = setTimeout(() => els.toast.classList.remove("visible"), 2400);
   }
 
-  async function loadSchedule(period, force = false) {
-    if (!force && state.schedules[period]) return state.schedules[period];
-    state.schedules[period] = await api(`api/v1/state?period=${period}`);
-    return state.schedules[period];
+  function loadSchedule(period, force = false) {
+    return resources.load(scheduleKey(period), force);
   }
-  async function loadProfile(force = false) {
-    if (!force && state.profile) return state.profile;
-    state.profile = await api("api/v1/profile");
-    return state.profile;
+  function loadProfile(force = false) {
+    return resources.load("profile", force);
   }
-  async function loadCurrent(force = false) {
-    if (state.busy) return;
-    state.busy = true;
-    els.refresh.classList.add("spinning");
-    try {
-      if (state.view === "profile") await loadProfile(force);
-      else await loadSchedule(state.view === "planner" ? state.period : "today", force);
-      render(); showContent();
-    } catch (error) { showError(error); }
-    finally { state.busy = false; els.refresh.classList.remove("spinning"); }
+  function loadCurrent(force = false) {
+    return resources.load(currentResourceKey(), force);
+  }
+  function loadCurrentInBackground(force = false) {
+    loadCurrent(force).catch(() => {});
   }
 
   function bindViewActions() {
-    document.querySelectorAll("[data-period]").forEach((button) => button.addEventListener("click", async () => {
+    document.querySelectorAll("[data-period]").forEach((button) => button.addEventListener("click", () => {
       state.period = button.dataset.period;
-      await loadCurrent();
+      render();
+      loadCurrentInBackground();
     }));
+    document.querySelector("[data-retry-current]")?.addEventListener(
+      "click",
+      () => loadCurrentInBackground(true),
+    );
     document.querySelectorAll("[data-task-action]").forEach((button) => button.addEventListener("click", async () => {
       const row = button.closest("[data-task-id]");
       const complete = button.dataset.taskAction === "complete";
       button.disabled = true;
       try {
         await api(`api/v1/tasks/${row.dataset.taskId}`, { method: "PATCH", body: JSON.stringify({ status: complete ? "completed" : "active" }) });
-        state.schedules = {};
+        resources.invalidatePrefix("schedule:");
         await loadSchedule("today", true);
-        render();
         tg?.HapticFeedback?.notificationOccurred("success");
         toast(complete ? "Готово. Задача осталась в завершённых." : "Задача возвращена");
       } catch (error) { toast(error.message); button.disabled = false; }
@@ -309,7 +354,9 @@
     button.disabled = true;
     button.textContent = "Загружаю…";
     try {
-      state.shortcutConfig ||= await api("api/v1/hse/shortcut-config");
+      if (!state.shortcutConfig) {
+        state.shortcutConfig = await api("api/v1/hse/shortcut-config");
+      }
       target.innerHTML = shortcutSetupHTML(state.shortcutConfig);
       target.classList.remove("hidden");
       button.classList.add("hidden");
@@ -344,11 +391,12 @@
     button.disabled = true;
     const data = new FormData(form);
     try {
-      state.profile = await api("api/v1/profile", { method: "PATCH", body: JSON.stringify({
+      const profile = await api("api/v1/profile", { method: "PATCH", body: JSON.stringify({
         timezone: data.get("timezone"), home: data.get("home"), daily_focus_minutes: Number(data.get("daily_focus_minutes")),
       }) });
-      state.schedules = {};
-      render(); toast("Профиль сохранён"); tg?.HapticFeedback?.notificationOccurred("success");
+      resources.set("profile", profile);
+      resources.invalidatePrefix("schedule:");
+      toast("Профиль сохранён"); tg?.HapticFeedback?.notificationOccurred("success");
     } catch (error) { toast(error.message); button.disabled = false; }
   }
 
@@ -361,19 +409,21 @@
     button.disabled = true; button.textContent = "Загружаю…";
     try {
       const result = await api("api/v1/hse/import", { method: "POST", body: file, headers: { "Content-Type": "text/calendar" } });
-      state.profile = null; state.schedules = {};
-      await loadProfile(true); render();
+      resources.invalidate("profile");
+      resources.invalidatePrefix("schedule:");
+      await loadProfile(true);
       toast(`Загружено событий: ${result.imported}`); tg?.HapticFeedback?.notificationOccurred("success");
     } catch (error) { toast(error.message); button.disabled = false; button.textContent = "Загрузить .ics"; }
   }
 
-  document.querySelectorAll(".nav-item").forEach((button) => button.addEventListener("click", async () => {
+  document.querySelectorAll(".nav-item").forEach((button) => button.addEventListener("click", () => {
     state.view = button.dataset.view;
-    await loadCurrent();
+    render();
+    loadCurrentInBackground();
     window.scrollTo({ top: 0, behavior: "smooth" });
   }));
-  els.refresh.addEventListener("click", () => loadCurrent(true));
-  els.retry.addEventListener("click", () => loadCurrent(true));
+  els.refresh.addEventListener("click", () => loadCurrentInBackground(true));
+  els.retry.addEventListener("click", () => loadCurrentInBackground(true));
   els.add.addEventListener("click", () => { els.form.reset(); document.querySelector("#task-duration").value = 30; els.dialog.showModal(); setTimeout(() => document.querySelector("#task-title").focus(), 80); });
   els.form.addEventListener("submit", async (event) => {
     if (event.submitter?.value === "cancel") return;
@@ -384,9 +434,9 @@
     button.disabled = true;
     try {
       await api("api/v1/tasks", { method: "POST", body: JSON.stringify({ title: data.get("title"), deadline: data.get("deadline") || null, estimated_minutes: Number(data.get("estimated_minutes")) }) });
-      state.schedules = {};
+      resources.invalidatePrefix("schedule:");
       await loadSchedule(state.view === "planner" ? state.period : "today", true);
-      els.dialog.close(); render(); toast("Задача добавлена"); tg?.HapticFeedback?.notificationOccurred("success");
+      els.dialog.close(); toast("Задача добавлена"); tg?.HapticFeedback?.notificationOccurred("success");
     } catch (error) { toast(error.message); }
     finally { button.disabled = false; }
   });
@@ -396,5 +446,6 @@
 
   initializeTelegram();
   els.date.textContent = new Intl.DateTimeFormat("ru-RU", { weekday: "long", day: "numeric", month: "long" }).format(new Date());
-  loadCurrent(true);
+  render();
+  loadCurrentInBackground(true);
 })();
