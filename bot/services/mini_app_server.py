@@ -632,6 +632,7 @@ class MiniAppServer:
         normalized_events = []
         ignored = 0
         rejection_reasons: dict[str, int] = {}
+        text_samples: list[str] = []
 
         def reject(reason: str) -> None:
             nonlocal ignored
@@ -640,6 +641,15 @@ class MiniAppServer:
 
         for raw in raw_events:
             if not isinstance(raw, dict):
+                if isinstance(raw, str) and len(text_samples) < 2:
+                    sample = " ".join(raw.split())[:240]
+                    sample = re.sub(
+                        r"(?i)\bBearer\s+\S+", "Bearer [redacted]", sample
+                    )
+                    sample = re.sub(
+                        r"(?i)\b[a-f0-9]{24,}\b", "[identifier]", sample
+                    )
+                    text_samples.append(sample or "[empty]")
                 reject(f"not_object:{type(raw).__name__}")
                 continue
             values = self._normalized_shortcut_keys(raw)
@@ -708,6 +718,8 @@ class MiniAppServer:
                 f"{reason}={count}"
                 for reason, count in sorted(rejection_reasons.items())
             ) or "empty"
+            if text_samples:
+                diagnostic += f"; text={text_samples[0]}"
             logger.warning(
                 "HSE Shortcut payload rejected: user=%s reasons=%s keys=%s",
                 request["user_id"],
