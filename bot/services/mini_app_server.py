@@ -198,7 +198,20 @@ class MiniAppServer:
             expected = f"Bearer {self.calendar_bridge_token}"
             supplied = request.headers.get("Authorization", "")
             if not hmac.compare_digest(supplied, expected):
-                raise web.HTTPUnauthorized(reason="invalid calendar bridge token")
+                try:
+                    payload = await request.json()
+                except (json.JSONDecodeError, UnicodeDecodeError, web.HTTPBadRequest):
+                    payload = None
+                body_token = ""
+                if isinstance(payload, dict):
+                    body_token = str(payload.get("token") or "").strip()
+                body_token_valid = hmac.compare_digest(
+                    body_token,
+                    self.calendar_bridge_token,
+                ) or hmac.compare_digest(body_token, expected)
+                if not body_token_valid:
+                    raise web.HTTPUnauthorized(reason="invalid calendar bridge token")
+                request["bridge_payload"] = payload
             request["user_id"] = self.calendar_bridge_owner_id
             return await handler(request)
         if not request.path.startswith("/api/v1/"):
@@ -561,15 +574,18 @@ class MiniAppServer:
             "calendar": "HSE",
             "endpoint": self.calendar_bridge_public_url,
             "authorization": f"Bearer {self.calendar_bridge_token}",
+            "token": self.calendar_bridge_token,
             "trigger": "HSE App is closed",
             "window_days": 14,
         })
 
     async def _receive_hse_calendar(self, request: web.Request) -> web.Response:
-        try:
-            payload = await request.json()
-        except (json.JSONDecodeError, web.HTTPBadRequest) as exc:
-            raise web.HTTPBadRequest(reason="JSON expected") from exc
+        payload = request.get("bridge_payload")
+        if payload is None:
+            try:
+                payload = await request.json()
+            except (json.JSONDecodeError, web.HTTPBadRequest) as exc:
+                raise web.HTTPBadRequest(reason="JSON expected") from exc
         raw_events = payload.get("events") if isinstance(payload, dict) else payload
         if not isinstance(raw_events, list):
             raise web.HTTPBadRequest(reason="events must be a list")

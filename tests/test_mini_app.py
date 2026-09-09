@@ -232,6 +232,7 @@ class MiniAppAPITests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(200, response.status)
         self.assertEqual("HSE", config["calendar"])
         self.assertEqual(f"Bearer {CALENDAR_TOKEN}", config["authorization"])
+        self.assertEqual(CALENDAR_TOKEN, config["token"])
         forbidden = await self.client.get(
             "/api/v1/hse/shortcut-config",
             headers={"X-Debug-User": "43"},
@@ -244,6 +245,18 @@ class MiniAppAPITests(unittest.IsolatedAsyncioTestCase):
             json={"events": []},
         )
         self.assertEqual(401, unauthorized.status)
+
+        wrong_body_token = await self.client.post(
+            "/bridge/v1/hse-calendar",
+            json={"token": "wrong", "events": []},
+        )
+        self.assertEqual(401, wrong_body_token.status)
+
+        body_authorized = await self.client.post(
+            "/bridge/v1/hse-calendar",
+            json={"token": CALENDAR_TOKEN, "events": []},
+        )
+        self.assertEqual(200, body_authorized.status)
 
         response = await self.client.post(
             "/bridge/v1/hse-calendar",
