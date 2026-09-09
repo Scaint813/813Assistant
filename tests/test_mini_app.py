@@ -268,6 +268,22 @@ class MiniAppAPITests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(200, body_authorized.status)
         self.assertEqual(1, (await body_authorized.json())["events"])
 
+        text_authorized = await self.client.post(
+            "/bridge/v1/hse-calendar",
+            json={
+                "token": CALENDAR_TOKEN,
+                "events": json.dumps({
+                    "id": "stringified-ios-event",
+                    "title": "Событие из текстового JSON",
+                    "start": "2026-09-09T11:30:00+03:00",
+                    "end": "2026-09-09T12:50:00+03:00",
+                    "calendar": "HSE",
+                }),
+            },
+        )
+        self.assertEqual(200, text_authorized.status)
+        self.assertEqual(1, (await text_authorized.json())["events"])
+
         response = await self.client.post(
             "/bridge/v1/hse-calendar",
             headers={"Authorization": f"Bearer {CALENDAR_TOKEN}"},

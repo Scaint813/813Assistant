@@ -239,8 +239,9 @@
       <ol class="setup-steps">
         <li><strong>Автоматизация → Приложение</strong><span>Выбери HSE App, условие «Закрыто», запуск немедленно.</span></li>
         <li><strong>Найти события календаря</strong><span>Календарь — ${escapeHTML(config.calendar)}, даты — ближайшие ${config.window_days} дней.</span></li>
-        <li><strong>Повторить для каждого события</strong><span>Добавь поля id, title, calendar, location и notes; даты start и end отформатируй как ISO 8601.</span></li>
-        <li><strong>Получить содержимое URL</strong><span>POST, тело JSON: token — секрет ниже, events — результаты повтора. Заголовки не нужны.</span></li>
+        <li><strong>Повторить для каждого события</strong><span>Собери словарь с полями id, title, calendar, location и notes; даты start и end отформатируй как ISO 8601.</span></li>
+        <li><strong>Добавить в переменную Events</strong><span>Размести сразу после словаря, внутри повтора. Так все словари сохранятся в одном списке.</span></li>
+        <li><strong>Получить содержимое URL</strong><span>После «Конец повтора»: POST, тело JSON. token — секрет ниже; events — переменная Events с типом «Массив». Заголовки не нужны.</span></li>
       </ol>
       <label class="field compact-field"><span>URL</span><div class="copy-row"><input id="shortcut-endpoint" readonly value="${escapeHTML(config.endpoint)}"><button class="secondary-button" type="button" data-copy-input="shortcut-endpoint">Копировать</button></div></label>
       <label class="field compact-field"><span>Значение поля token</span><div class="copy-row"><input id="shortcut-token" type="password" readonly value="${escapeHTML(config.token)}"><button class="secondary-button" type="button" data-copy-input="shortcut-token">Копировать</button></div></label>
