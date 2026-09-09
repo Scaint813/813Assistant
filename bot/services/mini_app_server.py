@@ -580,6 +580,27 @@ class MiniAppServer:
         })
 
     async def _receive_hse_calendar(self, request: web.Request) -> web.Response:
+        def decode_shortcut_json(value):
+            """Remove the extra JSON escaping added by iOS Shortcuts."""
+            decoded = value
+            for _ in range(4):
+                if not isinstance(decoded, str):
+                    return decoded
+                text = decoded.strip()
+                try:
+                    candidate = json.loads(text)
+                except json.JSONDecodeError:
+                    if r'\"' not in text:
+                        return decoded
+                    try:
+                        candidate = json.loads(f'"{text}"')
+                    except json.JSONDecodeError:
+                        return decoded
+                if candidate == decoded:
+                    return decoded
+                decoded = candidate
+            return decoded
+
         payload = request.get("bridge_payload")
         if payload is None:
             try:
@@ -590,10 +611,7 @@ class MiniAppServer:
         # A JSON body field configured as Text in Shortcuts can stringify the
         # repeat output. Accept valid JSON text in addition to native values.
         if isinstance(raw_events, str):
-            try:
-                decoded_events = json.loads(raw_events)
-            except json.JSONDecodeError:
-                decoded_events = None
+            decoded_events = decode_shortcut_json(raw_events)
             if isinstance(decoded_events, (dict, list)):
                 raw_events = decoded_events
         # Shortcuts collapses a one-item Repeat Result into the item itself.
@@ -618,10 +636,7 @@ class MiniAppServer:
                 pending.extend(reversed(item))
                 continue
             if isinstance(item, str):
-                try:
-                    decoded_item = json.loads(item)
-                except json.JSONDecodeError:
-                    decoded_item = None
+                decoded_item = decode_shortcut_json(item)
                 if isinstance(decoded_item, (dict, list)):
                     pending.append(decoded_item)
                     continue
