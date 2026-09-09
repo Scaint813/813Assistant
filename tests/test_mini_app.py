@@ -316,6 +316,23 @@ class MiniAppAPITests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(200, escaped_item_authorized.status)
         self.assertEqual(1, (await escaped_item_authorized.json())["events"])
 
+        json_like_item_authorized = await self.client.post(
+            "/bridge/v1/hse-calendar",
+            json={
+                "token": CALENDAR_TOKEN,
+                "events": [[
+                    r'{"end":"2026-09-10T14:20:00+03:00",'
+                    r'"location":"519, Б. Трехсвятительский пер., д. 3",'
+                    r'"start":"2026-09-10T13:00:00+03:00",'
+                    r'"id":"json-like-event","notes":"",'
+                    r'"title":"СПС "Консультант Плюс"",'
+                    r'"calendar":"HSE"}'
+                ]],
+            },
+        )
+        self.assertEqual(200, json_like_item_authorized.status)
+        self.assertEqual(1, (await json_like_item_authorized.json())["events"])
+
         invalid_text = await self.client.post(
             "/bridge/v1/hse-calendar",
             json={"token": CALENDAR_TOKEN, "events": [["1 object"]]},

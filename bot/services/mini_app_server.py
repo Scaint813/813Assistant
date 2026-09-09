@@ -588,13 +588,16 @@ class MiniAppServer:
                     return decoded
                 text = decoded.strip()
                 try:
-                    candidate = json.loads(text)
+                    candidate = json.loads(text, strict=False)
                 except json.JSONDecodeError:
                     if r'\"' not in text:
-                        return decoded
-                    try:
-                        candidate = json.loads(f'"{text}"')
-                    except json.JSONDecodeError:
+                        candidate = self._decode_shortcut_object_text(text)
+                    else:
+                        try:
+                            candidate = json.loads(f'"{text}"', strict=False)
+                        except json.JSONDecodeError:
+                            candidate = self._decode_shortcut_object_text(text)
+                    if candidate is None:
                         return decoded
                 if candidate == decoded:
                     return decoded
@@ -771,6 +774,70 @@ class MiniAppServer:
             "events": saved,
             "ignored": ignored,
         })
+
+    @staticmethod
+    def _decode_shortcut_object_text(text: str) -> dict | None:
+        """Parse the JSON-like object text produced by a Shortcuts dictionary."""
+        text = text.strip()
+        if not (text.startswith("{") and text.endswith("}")):
+            return None
+        keys = (
+            "id",
+            "identifier",
+            "идентификатор",
+            "title",
+            "name",
+            "название",
+            "имя",
+            "start",
+            "start_date",
+            "начало",
+            "дата_начала",
+            "end",
+            "end_date",
+            "окончание",
+            "конец",
+            "дата_окончания",
+            "calendar",
+            "calendar_name",
+            "календарь",
+            "location",
+            "геопозиция",
+            "местоположение",
+            "notes",
+            "description",
+            "заметки",
+            "примечания",
+        )
+        key_pattern = "|".join(re.escape(key) for key in keys)
+        matches = list(
+            re.finditer(
+                rf'(?:\{{|,)\s*"({key_pattern})"\s*:\s*',
+                text,
+                flags=re.IGNORECASE,
+            )
+        )
+        if not matches or matches[0].start() != 0:
+            return None
+
+        decoded = {}
+        for index, match in enumerate(matches):
+            value_end = (
+                matches[index + 1].start()
+                if index + 1 < len(matches)
+                else len(text) - 1
+            )
+            raw_value = text[match.end():value_end].strip()
+            try:
+                value = json.loads(raw_value, strict=False)
+            except json.JSONDecodeError:
+                if raw_value.startswith('"') and raw_value.endswith('"'):
+                    value = raw_value[1:-1]
+                    value = value.replace(r'\"', '"').replace(r"\\", "\\")
+                else:
+                    value = raw_value
+            decoded[match.group(1)] = value
+        return decoded or None
 
     @staticmethod
     def _normalized_shortcut_keys(raw: dict) -> dict:
