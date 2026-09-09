@@ -587,8 +587,12 @@ class MiniAppServer:
             except (json.JSONDecodeError, web.HTTPBadRequest) as exc:
                 raise web.HTTPBadRequest(reason="JSON expected") from exc
         raw_events = payload.get("events") if isinstance(payload, dict) else payload
+        # Shortcuts collapses a one-item Repeat Result into the item itself.
+        # Treat that dictionary exactly like a one-element event list.
+        if isinstance(raw_events, dict):
+            raw_events = [raw_events]
         if not isinstance(raw_events, list):
-            raise web.HTTPBadRequest(reason="events must be a list")
+            raise web.HTTPBadRequest(reason="events must be a list or object")
         if len(raw_events) > 2_000:
             raise web.HTTPBadRequest(reason="too many events")
 
