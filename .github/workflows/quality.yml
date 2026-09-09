@@ -24,6 +24,8 @@ jobs:
         run: bash scripts_check_no_conflicts.sh
       - name: Compile
         run: python -m compileall .
+      - name: Mini App JavaScript syntax
+        run: node --check bot/miniapp/app.js
       - name: Lint
         run: python -m ruff check bot tests
       - name: Tests

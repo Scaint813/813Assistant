@@ -84,8 +84,10 @@
     const parts = new Intl.DateTimeFormat("en", {
       year: "numeric", month: "2-digit", day: "2-digit", timeZone: state.timezone,
     }).formatToParts(date);
-    const value = Object.fromEntries(parts.map((part) => [part.type, part.value]));
-    return `${value.year}-${value.month}-${value.day}`;
+    const partsByType = Object.fromEntries(
+      parts.map((part) => [part.type, part.value]),
+    );
+    return `${partsByType.year}-${partsByType.month}-${partsByType.day}`;
   }
   function plural(number, one, few, many) {
     const n10 = number % 10; const n100 = number % 100;
