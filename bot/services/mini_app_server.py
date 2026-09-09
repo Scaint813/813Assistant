@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import json
 import logging
+import re
 import time as time_module
 from datetime import datetime, time, timedelta
 from pathlib import Path
@@ -106,6 +107,9 @@ class MiniAppServer:
         conflict_service,
         hse_calendar_service,
         *,
+        calendar_bridge_token: str = "",
+        calendar_bridge_owner_id: int | None = None,
+        calendar_bridge_public_url: str = "",
         dev_mode: bool = False,
     ):
         self.host = host
@@ -117,6 +121,17 @@ class MiniAppServer:
         self.calendar_service = calendar_service
         self.conflict_service = conflict_service
         self.hse_calendar_service = hse_calendar_service
+        default_owner_id = self.allowed_user_ids[0] if self.allowed_user_ids else 0
+        self.calendar_bridge_owner_id = int(
+            calendar_bridge_owner_id or default_owner_id
+        )
+        calendar_bridge_token = calendar_bridge_token.strip()
+        self.calendar_bridge_token = (
+            calendar_bridge_token
+            if len(calendar_bridge_token) >= 32 and self.calendar_bridge_owner_id > 0
+            else ""
+        )
+        self.calendar_bridge_public_url = calendar_bridge_public_url
         self.preferences_service = PreferencesService()
         self.validator = TelegramInitDataValidator(bot_token, allowed_user_ids)
         self.dev_mode = dev_mode
@@ -148,6 +163,14 @@ class MiniAppServer:
         app.router.add_get("/api/v1/profile", self._profile)
         app.router.add_patch("/api/v1/profile", self._update_profile)
         app.router.add_post("/api/v1/hse/import", self._import_hse)
+        app.router.add_get(
+            "/api/v1/hse/shortcut-config",
+            self._hse_shortcut_config,
+        )
+        app.router.add_post(
+            "/bridge/v1/hse-calendar",
+            self._receive_hse_calendar,
+        )
         return app
 
     @web.middleware
@@ -163,12 +186,21 @@ class MiniAppServer:
             response = web.json_response(
                 {"error": "internal server error"}, status=500
             )
-        if request.path.startswith("/api/"):
+        if request.path.startswith(("/api/", "/bridge/")):
             response.headers["Cache-Control"] = "no-store"
         return response
 
     @web.middleware
     async def _auth_middleware(self, request, handler):
+        if request.path.startswith("/bridge/v1/"):
+            if not self.calendar_bridge_token:
+                raise web.HTTPServiceUnavailable(reason="calendar bridge is disabled")
+            expected = f"Bearer {self.calendar_bridge_token}"
+            supplied = request.headers.get("Authorization", "")
+            if not hmac.compare_digest(supplied, expected):
+                raise web.HTTPUnauthorized(reason="invalid calendar bridge token")
+            request["user_id"] = self.calendar_bridge_owner_id
+            return await handler(request)
         if not request.path.startswith("/api/v1/"):
             return await handler(request)
         if self.dev_mode and request.headers.get("X-Debug-User"):
@@ -347,7 +379,9 @@ class MiniAppServer:
             1 for item in active_tasks
             if item.deadline and ensure_aware(item.deadline, now.tzinfo) < now
         )
-        hse_count = sum(1 for item in events if item.source == "hse_ical")
+        hse_count = sum(
+            1 for item in events if item.source in {"hse_ical", "hse_ios"}
+        )
         return {
             "period": period,
             "now": now.isoformat(),
@@ -465,6 +499,11 @@ class MiniAppServer:
                     if hse_status["synced_at"] else None
                 ),
                 "periodic_sync": hse_status["configured"],
+                "iphone_bridge": bool(
+                    self.calendar_bridge_token
+                    and user_id == self.calendar_bridge_owner_id
+                ),
+                "calendar_name": "HSE",
             },
         })
 
@@ -513,6 +552,138 @@ class MiniAppServer:
             "last_end": result.last_end.isoformat() if result.last_end else None,
         })
 
+    async def _hse_shortcut_config(self, request: web.Request) -> web.Response:
+        if request["user_id"] != self.calendar_bridge_owner_id:
+            raise web.HTTPForbidden(reason="calendar bridge belongs to the owner")
+        if not self.calendar_bridge_token or not self.calendar_bridge_public_url:
+            raise web.HTTPServiceUnavailable(reason="calendar bridge is disabled")
+        return web.json_response({
+            "calendar": "HSE",
+            "endpoint": self.calendar_bridge_public_url,
+            "authorization": f"Bearer {self.calendar_bridge_token}",
+            "trigger": "HSE App is closed",
+            "window_days": 14,
+        })
+
+    async def _receive_hse_calendar(self, request: web.Request) -> web.Response:
+        try:
+            payload = await request.json()
+        except (json.JSONDecodeError, web.HTTPBadRequest) as exc:
+            raise web.HTTPBadRequest(reason="JSON expected") from exc
+        raw_events = payload.get("events") if isinstance(payload, dict) else payload
+        if not isinstance(raw_events, list):
+            raise web.HTTPBadRequest(reason="events must be a list")
+        if len(raw_events) > 2_000:
+            raise web.HTTPBadRequest(reason="too many events")
+
+        normalized_events = []
+        ignored = 0
+        for raw in raw_events:
+            if not isinstance(raw, dict):
+                ignored += 1
+                continue
+            values = self._normalized_shortcut_keys(raw)
+            calendar_name = str(
+                values.get("calendar") or values.get("calendar_name") or ""
+            ).strip()
+            if calendar_name.casefold() != "hse":
+                ignored += 1
+                continue
+            title = " ".join(str(values.get("title") or "").split())
+            start = values.get("start") or values.get("start_date")
+            end = values.get("end") or values.get("end_date")
+            if not title or not start or not end:
+                ignored += 1
+                continue
+            try:
+                start_at = self.calendar_service._parse_datetime(start)
+                end_at = self.calendar_service._parse_datetime(end)
+            except (TypeError, ValueError):
+                ignored += 1
+                continue
+            if end_at <= start_at:
+                ignored += 1
+                continue
+
+            notes = str(
+                values.get("notes") or values.get("description") or ""
+            ).strip()
+            identifier = str(
+                values.get("id") or values.get("identifier") or ""
+            ).strip()
+            if not identifier:
+                note_id = re.search(r"\b[a-fA-F0-9]{24,128}\b", notes)
+                identifier = note_id.group(0) if note_id else ""
+            if not identifier:
+                stable_value = f"{title}\n{start_at.isoformat()}\n{end_at.isoformat()}"
+                identifier = hashlib.sha256(stable_value.encode()).hexdigest()
+
+            location = " ".join(str(values.get("location") or "").split())
+            building, room = self.hse_calendar_service._split_location(location)
+            teacher = self.hse_calendar_service._extract_teacher(notes)
+            if not teacher:
+                teacher = self._teacher_from_hse_title(title)
+            normalized_events.append({
+                "id": f"hse-ios:{identifier}"[:255],
+                "calendar": "HSE",
+                "title": title[:255],
+                "event_type": self.hse_calendar_service._event_type(title, notes),
+                "description": notes[:4_000],
+                "location": location[:255],
+                "teacher": teacher[:255],
+                "building": building[:255],
+                "room": room[:64],
+                "start": start_at.isoformat(),
+                "end": end_at.isoformat(),
+                "is_busy": True,
+            })
+
+        if raw_events and not normalized_events:
+            raise web.HTTPBadRequest(
+                reason="no valid events from the HSE calendar"
+            )
+        async with self.session_factory() as session:
+            saved = await self.calendar_service.replace_events(
+                session,
+                request["user_id"],
+                {
+                    "source": "hse_ios",
+                    "replace_all": True,
+                    "events": normalized_events,
+                },
+            )
+            await session.commit()
+        logger.info(
+            "HSE iPhone calendar synchronized: user=%s saved=%s ignored=%s",
+            request["user_id"],
+            saved,
+            ignored,
+        )
+        return web.json_response({
+            "status": "saved",
+            "calendar": "HSE",
+            "events": saved,
+            "ignored": ignored,
+        })
+
+    @staticmethod
+    def _normalized_shortcut_keys(raw: dict) -> dict:
+        return {
+            re.sub(r"[^a-z0-9]+", "_", str(key).casefold()).strip("_"): value
+            for key, value in raw.items()
+        }
+
+    @staticmethod
+    def _teacher_from_hse_title(title: str) -> str:
+        candidate = title.rpartition("·")[2].strip()
+        words = candidate.replace("-", " ").split()
+        if 2 <= len(words) <= 4 and all(
+            word[:1].isupper() and word[1:].islower()
+            for word in words
+        ):
+            return candidate
+        return ""
+
     async def _user_now(self, session, user_id: int):
         profile = await self.user_profile_service.get(session, user_id)
         clock = self.time_service.in_timezone(
@@ -534,7 +705,7 @@ class MiniAppServer:
     def _event_payload(event: CalendarEvent, tz) -> dict:
         return {
             "key": f"event:{event.id}",
-            "kind": "class" if event.source == "hse_ical" else "event",
+            "kind": "class" if event.source in {"hse_ical", "hse_ios"} else "event",
             "title": event.title,
             "start": ensure_aware(event.start_at, tz).isoformat(),
             "end": ensure_aware(event.end_at, tz).isoformat(),

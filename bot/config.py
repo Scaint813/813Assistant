@@ -58,6 +58,7 @@ class Config:
     mini_app_public_url: str
     mini_app_host: str
     mini_app_port: int
+    calendar_bridge_token: str
     reliability_enabled: bool
     backup_dir: str
     backup_retention_days: int
@@ -164,6 +165,7 @@ def get_config() -> Config:
         mini_app_public_url=os.getenv("MINI_APP_PUBLIC_URL", "").strip(),
         mini_app_host=os.getenv("MINI_APP_HOST", "127.0.0.1"),
         mini_app_port=int(os.getenv("MINI_APP_PORT", "8782")),
+        calendar_bridge_token=os.getenv("CALENDAR_BRIDGE_TOKEN", "").strip(),
         reliability_enabled=os.getenv("RELIABILITY_ENABLED", "true").lower() == "true",
         backup_dir=os.getenv("BACKUP_DIR", "./backups"),
         backup_retention_days=int(os.getenv("BACKUP_RETENTION_DAYS", "14")),

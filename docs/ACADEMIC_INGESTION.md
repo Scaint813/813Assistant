@@ -5,7 +5,7 @@ the source of truth. Academic data enters through source adapters, is normalized
 and only then reaches planning:
 
 ```text
-HSE iCal / Calendar bridge / future LMS and mail adapters
+HSE iCal / iPhone calendar HSE / future LMS and mail adapters
                          │
                          ▼
                 normalized records
@@ -25,6 +25,10 @@ HSE iCal / Calendar bridge / future LMS and mail adapters
 
 - Send an HSE-exported `.ics` file to the bot. The import is owner-isolated,
   idempotent, limited to 5 MB, and replaces the previous HSE snapshot.
+- The HSE App iPhone path mirrors its system calendar named exactly `HSE`
+  through a private Shortcuts automation. The server rejects other calendar
+  names, keeps the stable identifier from event notes, and never reads the
+  user's other calendars.
 - Optionally set `HSE_ICAL_URL`, `HSE_ICAL_SYNC_ENABLED=true`, and the polling
   interval. Only HTTPS links on `hse.ru` subdomains are accepted, redirects are
   checked before following them, and the private URL is never logged.
@@ -100,4 +104,3 @@ The detector reports either a direct overlap or insufficient transfer time.
 Exact saved route facts include the configured arrival buffer. Unknown routes use
 `DEFAULT_TRANSFER_BUFFER_MINUTES` and carry an approximation marker. Identical
 events mirrored by two sources are suppressed as duplicates.
-

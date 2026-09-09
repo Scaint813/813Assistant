@@ -7,6 +7,7 @@
     period: "today",
     schedules: {},
     profile: null,
+    shortcutConfig: null,
     timezone: undefined,
     busy: false,
   };
@@ -173,6 +174,9 @@
   function renderProfile(profile) {
     const options = profile.timezone_options.map((item) => `<option value="${escapeHTML(item.timezone)}" ${item.timezone === profile.timezone ? "selected" : ""}>${escapeHTML(item.label)} · ${escapeHTML(item.offset)}</option>`).join("");
     const sync = profile.hse.synced_at ? `Последнее обновление: ${formatDate(profile.hse.synced_at, { day: "numeric", month: "short" })}, ${formatTime(profile.hse.synced_at)}` : "Файл ещё не загружен";
+    const bridgeStatus = profile.hse.iphone_bridge
+      ? "Можно подключить автоматическое обновление с iPhone"
+      : "Синхронизация с iPhone ещё не настроена";
     return `<section class="profile-panel"><div class="panel-heading"><h2>${escapeHTML(profile.name)}</h2><p>Время и дорога учитываются в расписании.</p></div>
       <form class="profile-fields" id="profile-form">
         <label class="field"><span>Город и часовой пояс</span><select name="timezone">${options}</select></label>
@@ -180,12 +184,34 @@
         <label class="field"><span>Фокус в день, минут</span><input name="daily_focus_minutes" type="number" min="60" max="480" step="15" value="${profile.planning.daily_focus_minutes}"></label>
         <button class="primary-button full-width" type="submit">Сохранить профиль</button>
       </form></section>
-      <section class="profile-panel"><div class="panel-heading"><h2>Расписание ВШЭ</h2><p>${profile.hse.events} ${plural(profile.hse.events, "событие", "события", "событий")} · ${escapeHTML(sync)}</p></div>
-        <form class="profile-fields" id="hse-form">
-          <label class="field file-input"><span>Файл календаря .ics</span><input name="calendar" type="file" accept=".ics,text/calendar" required></label>
-          <p class="helper">Загрузка заменит только прежние события ВШЭ. Задачи и другие календари останутся на месте.</p>
-          <button class="primary-button full-width" type="submit">Обновить расписание</button>
-        </form></section>`;
+      <section class="profile-panel"><div class="panel-heading"><h2>Календарь HSE с iPhone</h2><p>${profile.hse.events} ${plural(profile.hse.events, "событие", "события", "событий")} · ${escapeHTML(sync)}</p></div>
+        <div class="profile-fields">
+          <div class="source-flow"><span>HSE App</span><b>→</b><span>Календарь HSE</span><b>→</b><span>Планнер</span></div>
+          <p class="helper">${escapeHTML(bridgeStatus)}. Личные календари не отправляются.</p>
+          ${profile.hse.iphone_bridge ? '<button class="primary-button full-width" id="hse-setup-button" type="button">Настроить автоматизацию</button>' : '<div class="notice">Серверный приёмник календаря пока выключен.</div>'}
+          <div id="hse-shortcut-setup" class="shortcut-setup hidden"></div>
+          <details class="fallback-import">
+            <summary>Если есть файл .ics</summary>
+            <form id="hse-form">
+              <label class="field file-input"><span>Файл календаря .ics</span><input name="calendar" type="file" accept=".ics,text/calendar" required></label>
+              <p class="helper">Файл заменит только прежние события HSE. Задачи и другие календари останутся на месте.</p>
+              <button class="primary-button full-width" type="submit">Загрузить .ics</button>
+            </form>
+          </details>
+        </div></section>`;
+  }
+
+  function shortcutSetupHTML(config) {
+    return `<div class="setup-heading"><h3>Автоматизация после HSE App</h3><p class="helper">Создаётся один раз в приложении «Команды».</p></div>
+      <ol class="setup-steps">
+        <li><strong>Автоматизация → Приложение</strong><span>Выбери HSE App, условие «Закрыто», запуск немедленно.</span></li>
+        <li><strong>Найти события календаря</strong><span>Календарь — ${escapeHTML(config.calendar)}, даты — ближайшие ${config.window_days} дней.</span></li>
+        <li><strong>Повторить для каждого события</strong><span>Добавь поля id, title, calendar, location и notes; даты start и end отформатируй как ISO 8601.</span></li>
+        <li><strong>Получить содержимое URL</strong><span>POST, тело JSON: словарь с ключом events и собранным списком.</span></li>
+      </ol>
+      <label class="field compact-field"><span>URL</span><div class="copy-row"><input id="shortcut-endpoint" readonly value="${escapeHTML(config.endpoint)}"><button class="secondary-button" type="button" data-copy-input="shortcut-endpoint">Копировать</button></div></label>
+      <label class="field compact-field"><span>Заголовок Authorization</span><div class="copy-row"><input id="shortcut-authorization" type="password" readonly value="${escapeHTML(config.authorization)}"><button class="secondary-button" type="button" data-copy-input="shortcut-authorization">Копировать</button></div></label>
+      <p class="secret-warning">Токен даёт доступ только к загрузке календаря HSE. Не отправляй его в чат и не добавляй в ссылку.</p>`;
   }
 
   function currentSchedule() { return state.schedules[state.view === "planner" ? state.period : "today"]; }
@@ -272,6 +298,41 @@
     }));
     document.querySelector("#profile-form")?.addEventListener("submit", saveProfile);
     document.querySelector("#hse-form")?.addEventListener("submit", importHSE);
+    document.querySelector("#hse-setup-button")?.addEventListener("click", showShortcutSetup);
+  }
+
+  async function showShortcutSetup(event) {
+    const button = event.currentTarget;
+    const target = document.querySelector("#hse-shortcut-setup");
+    button.disabled = true;
+    button.textContent = "Загружаю…";
+    try {
+      state.shortcutConfig ||= await api("api/v1/hse/shortcut-config");
+      target.innerHTML = shortcutSetupHTML(state.shortcutConfig);
+      target.classList.remove("hidden");
+      button.classList.add("hidden");
+      target.querySelectorAll("[data-copy-input]").forEach((copyButton) => {
+        copyButton.addEventListener("click", () => copyInput(copyButton.dataset.copyInput));
+      });
+    } catch (error) {
+      toast(error.message);
+      button.disabled = false;
+      button.textContent = "Настроить автоматизацию";
+    }
+  }
+
+  async function copyInput(id) {
+    const input = document.getElementById(id);
+    try {
+      await navigator.clipboard.writeText(input.value);
+    } catch (_error) {
+      input.type = "text";
+      input.select();
+      document.execCommand("copy");
+      input.type = id === "shortcut-authorization" ? "password" : "text";
+    }
+    tg?.HapticFeedback?.selectionChanged();
+    toast("Скопировано");
   }
 
   async function saveProfile(event) {
@@ -301,7 +362,7 @@
       state.profile = null; state.schedules = {};
       await loadProfile(true); render();
       toast(`Загружено событий: ${result.imported}`); tg?.HapticFeedback?.notificationOccurred("success");
-    } catch (error) { toast(error.message); button.disabled = false; button.textContent = "Обновить расписание"; }
+    } catch (error) { toast(error.message); button.disabled = false; button.textContent = "Загрузить .ics"; }
   }
 
   document.querySelectorAll(".nav-item").forEach((button) => button.addEventListener("click", async () => {

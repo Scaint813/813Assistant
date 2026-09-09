@@ -143,6 +143,7 @@ nano .env
 | `MINI_APP_ENABLED` | Запустить Mini App и закрепить кнопку `Управление` (`false` по умолчанию) |
 | `MINI_APP_PUBLIC_URL` | Публичный HTTPS URL Mini App с завершающим `/` |
 | `MINI_APP_HOST` / `MINI_APP_PORT` | Локальный адрес HTTP-сервера Mini App; по умолчанию `127.0.0.1:8782` |
+| `CALENDAR_BRIDGE_TOKEN` | Отдельный секрет от 32 символов для автоматизации `Календарь HSE → Mini App`; не коммитить |
 | `DATABASE_URL` | SQLite URL (по умолчанию `sqlite+aiosqlite:///./assistant.db`) |
 | `RELIABILITY_ENABLED` | Включить дешёвые проверки DB/scheduler/jobs и backup (`true`) |
 | `BACKUP_DIR` | Каталог online-backup SQLite (по умолчанию `./backups`) |
@@ -155,6 +156,9 @@ nano .env
 
 Настройка HTTPS reverse proxy и защита Mini App описаны в
 [`docs/MINI_APP.md`](docs/MINI_APP.md).
+
+Подключение созданного HSE App календаря `HSE` через автоматизацию iPhone:
+[`docs/HSE_IPHONE_SHORTCUT.md`](docs/HSE_IPHONE_SHORTCUT.md).
 
 ### Закрытая многопользовательская готовность
 

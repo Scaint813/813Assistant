@@ -306,6 +306,41 @@ h3 { margin-bottom: 3px; font-size: 16px; line-height: 1.3; }
 .file-input input { padding: 9px; }
 .helper { margin: -4px 0 12px; color: var(--muted); font-size: 12px; line-height: 1.45; }
 
+.source-flow {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  margin: 16px 0;
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.source-flow span { padding: 7px 8px; border-radius: 8px; background: var(--bg); }
+.source-flow b { color: var(--accent); }
+.shortcut-setup { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--border); }
+.setup-heading p { margin-top: 0; }
+.setup-steps { display: grid; gap: 13px; margin: 16px 0 20px; padding-left: 22px; }
+.setup-steps li { padding-left: 3px; color: var(--accent); }
+.setup-steps strong, .setup-steps span { display: block; color: var(--text); }
+.setup-steps strong { margin-bottom: 3px; font-size: 13px; }
+.setup-steps span { color: var(--muted); font-size: 12px; line-height: 1.4; }
+.copy-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
+.compact-field input { min-width: 0; font-size: 12px; }
+.secondary-button {
+  min-height: 44px;
+  padding: 0 11px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg);
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 700;
+}
+.secret-warning { margin: 10px 0 0; color: var(--warning); font-size: 11px; line-height: 1.4; }
+.fallback-import { margin-top: 16px; border-top: 1px solid var(--border); }
+.fallback-import summary { padding: 16px 0 2px; color: var(--accent); font-size: 13px; font-weight: 650; cursor: pointer; }
+
 .primary-button {
   min-height: 44px;
   padding: 0 17px;

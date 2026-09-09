@@ -220,7 +220,7 @@ class HSECalendarService:
                 func.max(CalendarEvent.end_at),
             ).where(
                 CalendarEvent.user_id == (user_id or self.user_id),
-                CalendarEvent.source == self.SOURCE,
+                CalendarEvent.source.in_((self.SOURCE, "hse_ios")),
                 CalendarEvent.end_at >= now,
             )
         )
@@ -266,6 +266,13 @@ class HSECalendarService:
     def _split_location(location: str) -> tuple[str, str]:
         if not location:
             return "", ""
+        leading_room_match = re.match(
+            r"^([А-ЯA-Z]?\d{2,4}[А-ЯA-Z]?)\s*,\s*(.+)$",
+            location,
+            flags=re.IGNORECASE,
+        )
+        if leading_room_match:
+            return leading_room_match.group(2).strip(), leading_room_match.group(1)
         room_match = re.search(
             r"(?:ауд(?:итория)?\.?|room)\s*[:№#-]?\s*([\w.-]+)",
             location,

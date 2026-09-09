@@ -10,9 +10,10 @@ from urllib.parse import urlencode
 from zoneinfo import ZoneInfo
 
 from aiohttp.test_utils import TestClient, TestServer
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from bot.database.models import Base
+from bot.database.models import Base, CalendarEvent
 from bot.services.calendar_service import CalendarService
 from bot.services.conflict_service import ConflictService
 from bot.services.hse_calendar_service import HSECalendarService
@@ -23,6 +24,8 @@ from bot.services.mini_app_server import (
 )
 from bot.services.time_service import TimeService
 from bot.services.user_profile_service import UserProfileService
+
+CALENDAR_TOKEN = "calendar-secret-calendar-secret-1234"
 
 
 class FixedTimeService(TimeService):
@@ -107,6 +110,11 @@ class MiniAppAPITests(unittest.IsolatedAsyncioTestCase):
             calendar,
             ConflictService(),
             hse,
+            calendar_bridge_token=CALENDAR_TOKEN,
+            calendar_bridge_owner_id=42,
+            calendar_bridge_public_url=(
+                "https://assistant.example.com/assistant/bridge/v1/hse-calendar"
+            ),
             dev_mode=True,
         )
         self.client = TestClient(TestServer(self.service.create_app()))
@@ -198,3 +206,118 @@ class MiniAppAPITests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("Asia/Almaty", profile["timezone"])
         self.assertEqual("Хамовники", profile["home"])
         self.assertEqual(240, profile["planning"]["daily_focus_minutes"])
+
+    async def test_shortcut_config_is_visible_only_to_owner(self):
+        response = await self.client.get(
+            "/api/v1/hse/shortcut-config",
+            headers=self.headers,
+        )
+        config = await response.json()
+
+        self.assertEqual(200, response.status)
+        self.assertEqual("HSE", config["calendar"])
+        self.assertEqual(f"Bearer {CALENDAR_TOKEN}", config["authorization"])
+        forbidden = await self.client.get(
+            "/api/v1/hse/shortcut-config",
+            headers={"X-Debug-User": "43"},
+        )
+        self.assertEqual(403, forbidden.status)
+
+    async def test_hse_calendar_bridge_filters_normalizes_and_clears_snapshot(self):
+        unauthorized = await self.client.post(
+            "/bridge/v1/hse-calendar",
+            json={"events": []},
+        )
+        self.assertEqual(401, unauthorized.status)
+
+        response = await self.client.post(
+            "/bridge/v1/hse-calendar",
+            headers={"Authorization": f"Bearer {CALENDAR_TOKEN}"},
+            json={
+                "events": [
+                    {
+                        "id": "ios-event-1",
+                        "title": (
+                            "Проектный семинар · Научно-исследовательский "
+                            "семинар · Солдаткина Оксана Леонидовна"
+                        ),
+                        "start": "2026-09-09T13:00:00+03:00",
+                        "end": "2026-09-09T14:20:00+03:00",
+                        "calendar": "HSE",
+                        "location": "435, Б. Трехсвятительский пер., д. 3",
+                        "notes": "24e7c7759ccca9305959285074dd9f20eb3ff",
+                    },
+                    {
+                        "id": "personal-event",
+                        "title": "Личное событие",
+                        "start": "2026-09-09T15:00:00+03:00",
+                        "end": "2026-09-09T16:00:00+03:00",
+                        "calendar": "Личный",
+                    },
+                ]
+            },
+        )
+        result = await response.json()
+
+        self.assertEqual(200, response.status)
+        self.assertEqual(1, result["events"])
+        self.assertEqual(1, result["ignored"])
+        async with self.sessions() as session:
+            events = list(
+                (await session.execute(select(CalendarEvent))).scalars().all()
+            )
+        self.assertEqual(1, len(events))
+        self.assertEqual("hse_ios", events[0].source)
+        self.assertEqual("HSE", events[0].calendar_name)
+        self.assertEqual("435", events[0].room)
+        self.assertIn("Трехсвятительский", events[0].building)
+        self.assertEqual("Солдаткина Оксана Леонидовна", events[0].teacher)
+
+        async with self.sessions() as session:
+            session.add(CalendarEvent(
+                user_id=42,
+                external_id="personal-existing",
+                calendar_name="Личный",
+                title="Не удалять",
+                start_at=datetime(
+                    2026, 9, 9, 18, 0, tzinfo=ZoneInfo("Europe/Moscow")
+                ),
+                end_at=datetime(
+                    2026, 9, 9, 19, 0, tzinfo=ZoneInfo("Europe/Moscow")
+                ),
+                source="shortcut",
+            ))
+            await session.commit()
+
+        rejected = await self.client.post(
+            "/bridge/v1/hse-calendar",
+            headers={"Authorization": f"Bearer {CALENDAR_TOKEN}"},
+            json={
+                "events": [
+                    {
+                        "title": "Личное событие",
+                        "start": "2026-09-09T15:00:00+03:00",
+                        "end": "2026-09-09T16:00:00+03:00",
+                        "calendar": "Личный",
+                    }
+                ]
+            },
+        )
+        self.assertEqual(400, rejected.status)
+        async with self.sessions() as session:
+            preserved = list(
+                (await session.execute(select(CalendarEvent))).scalars().all()
+            )
+        self.assertEqual(2, len(preserved))
+
+        cleared = await self.client.post(
+            "/bridge/v1/hse-calendar",
+            headers={"Authorization": f"Bearer {CALENDAR_TOKEN}"},
+            json={"events": []},
+        )
+        async with self.sessions() as session:
+            remaining = list(
+                (await session.execute(select(CalendarEvent))).scalars().all()
+            )
+        self.assertEqual(200, cleared.status)
+        self.assertEqual(["shortcut"], [event.source for event in remaining])

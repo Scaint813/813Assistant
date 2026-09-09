@@ -82,6 +82,14 @@ class AcademicIngestionTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             self.hse._validated_url("https://hse.ru.example.org/feed.ics")
 
+    def test_hse_ios_location_with_leading_room_is_normalized(self):
+        building, room = self.hse._split_location(
+            "435, Б. Трехсвятительский пер., д. 3"
+        )
+
+        self.assertEqual("435", room)
+        self.assertEqual("Б. Трехсвятительский пер., д. 3", building)
+
     def test_conflicts_include_route_buffer_and_ignore_duplicate_mirrors(self):
         first = CalendarEvent(
             id=1,

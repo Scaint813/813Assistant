@@ -50,7 +50,7 @@ class CalendarService:
                 "is_busy": bool(raw.get("is_busy", True)),
             })
 
-        if parsed and payload.get("replace_all"):
+        if payload.get("replace_all"):
             await session.execute(
                 delete(CalendarEvent).where(
                     CalendarEvent.user_id == user_id,

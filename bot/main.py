@@ -294,6 +294,11 @@ async def main() -> None:
                 calendar_service,
                 conflict_service,
                 hse_calendar_service,
+                calendar_bridge_token=cfg.calendar_bridge_token,
+                calendar_bridge_owner_id=cfg.allowed_user_id,
+                calendar_bridge_public_url=(
+                    mini_app_url + "bridge/v1/hse-calendar"
+                ),
             )
             await mini_app_server.start()
             try:
