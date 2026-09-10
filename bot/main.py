@@ -294,10 +294,19 @@ async def main() -> None:
                 calendar_service,
                 conflict_service,
                 hse_calendar_service,
+                health_service,
+                training_service,
                 calendar_bridge_token=cfg.calendar_bridge_token,
                 calendar_bridge_owner_id=cfg.allowed_user_id,
                 calendar_bridge_public_url=(
                     mini_app_url + "bridge/v1/hse-calendar"
+                ),
+                health_bridge_token=(
+                    cfg.health_bridge_token if cfg.health_bridge_enabled else ""
+                ),
+                health_bridge_owner_id=cfg.allowed_user_id,
+                health_bridge_public_url=(
+                    mini_app_url + "bridge/v1/health-snapshot"
                 ),
             )
             await mini_app_server.start()

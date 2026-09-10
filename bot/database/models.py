@@ -416,6 +416,23 @@ class HealthNudge(Base, TimestampMixin):
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class DailyWellnessLog(Base, TimestampMixin):
+    """Small manual daily totals kept separately from Apple Health snapshots."""
+
+    __tablename__ = "daily_wellness_logs"
+    __table_args__ = (
+        UniqueConstraint("user_id", "date", name="uq_daily_wellness_user_date"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(Integer, index=True)
+    date: Mapped[date] = mapped_column(Date, index=True)
+    water_ml: Mapped[int] = mapped_column(Integer, default=0)
+    protein_g: Mapped[int] = mapped_column(Integer, default=0)
+    calories_kcal: Mapped[int] = mapped_column(Integer, default=0)
+    fat_g: Mapped[int] = mapped_column(Integer, default=0)
+    carbs_g: Mapped[int] = mapped_column(Integer, default=0)
+
+
 class TrainingProfile(Base, TimestampMixin):
     __tablename__ = "training_profiles"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)

@@ -47,7 +47,7 @@ async function run() {
     "task-dialog", "task-form", "toast",
   ];
   const elements = Object.fromEntries(ids.map((id) => [id, new FakeElement()]));
-  const navItems = ["today", "planner", "tasks", "profile"].map(
+  const navItems = ["today", "planner", "tasks", "health", "profile"].map(
     (view) => new FakeElement({ view }),
   );
   const requests = new Map();
@@ -89,7 +89,12 @@ async function run() {
       timezone: "Europe/Moscow",
       timezone_options: [{ timezone: "Europe/Moscow", label: "Москва", offset: "+03:00" }],
       home: "",
-      planning: { daily_focus_minutes: 180 },
+      planning: {
+        daily_focus_minutes: 180,
+        auto_planning_minutes: 180,
+        focus_load_level: "balanced",
+        focus_warning: "",
+      },
       hse: {
         events: 0,
         synced_at: null,
@@ -102,6 +107,40 @@ async function run() {
   await flush();
   assert.match(elements.view.innerHTML, /Синхронизация календаря HSE/);
   assert.match(elements.view.innerHTML, /Ещё не запускалась/);
+
+  navItems.find((item) => item.dataset.view === "health").listeners.click();
+  await flush();
+  assert.equal(elements["page-title"].textContent, "Здоровье");
+  assert.ok(requests.has("api/v1/health"));
+  requests.get("api/v1/health").resolve({
+    ok: true,
+    status: 200,
+    json: async () => ({
+      now: "2026-09-09T10:00:00+03:00",
+      timezone: "Europe/Moscow",
+      apple_health: { connected: false, bridge_enabled: true, snapshot: null },
+      recovery: {
+        level: "unknown",
+        title: "Нет данных Apple Health",
+        message: "Подключи сон и шаги.",
+        recommendations: [],
+      },
+      intake: { water_ml: 0, protein_g: 0, calories_kcal: 0, fat_g: 0, carbs_g: 0 },
+      goals: { water_ml: 0, protein_g: 0 },
+      training: {
+        configured: false,
+        goal: "",
+        upcoming: [],
+        history: [],
+        micro_plan: { level: "setup", title: "Сначала задай цель", text: "Напиши боту." },
+      },
+      medical_disclaimer: "Не медицинская диагностика.",
+    }),
+  });
+  await flush();
+  assert.match(elements.view.innerHTML, /Баланс дня/);
+  assert.match(elements.view.innerHTML, /Подключить Apple Health/);
+  assert.equal(elements["add-task-button"].classNames.has("hidden"), true);
 
   requests.get("api/v1/state?period=today").resolve({
     ok: true,

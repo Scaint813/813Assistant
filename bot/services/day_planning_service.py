@@ -80,7 +80,9 @@ class DayPlanningService:
                 window_start, window_end, events + workouts, now.tzinfo
             )
             budget = min(
-                planning["daily_focus_minutes"],
+                planning.get(
+                    "auto_planning_minutes", planning["daily_focus_minutes"]
+                ),
                 self.calendar_service._interval_minutes(free),
             )
             while budget >= 30:
@@ -159,11 +161,16 @@ class DayPlanningService:
             heading,
             "",
             f"Часовой пояс: {data['timezone']}",
-            f"Дневной фокус: до {data['planning']['daily_focus_minutes'] // 60} ч.",
+            f"Дневной фокус: до {data['planning'].get('auto_planning_minutes', data['planning']['daily_focus_minutes']) // 60} ч.",
             "Дни: каждый день." if data["planning"]["planning_weekends"]
             else "Дни: понедельник–пятница.",
             "",
         ]
+        if data["planning"].get("focus_warning"):
+            lines[5:5] = [
+                f"Выбрано в профиле: {data['planning']['daily_focus_minutes'] // 60} ч.",
+                f"⚠️ {data['planning']['focus_warning']}",
+            ]
         current_day = None
         weekdays = (
             "понедельник", "вторник", "среда", "четверг",

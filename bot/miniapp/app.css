@@ -365,6 +365,112 @@ h3 { margin-bottom: 3px; font-size: 16px; line-height: 1.3; }
 .fallback-import { margin-top: 16px; border-top: 1px solid var(--border); }
 .fallback-import summary { padding: 16px 0 2px; color: var(--accent); font-size: 13px; font-weight: 650; cursor: pointer; }
 
+.recovery-card {
+  margin: 4px 0 22px;
+  padding: 18px;
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--success);
+  border-radius: 16px;
+  background: var(--surface);
+}
+.recovery-card.watch { border-left-color: var(--warning); }
+.recovery-card.overload { border-left-color: var(--danger); }
+.recovery-card.unknown { border-left-color: var(--muted); }
+.recovery-label {
+  display: block;
+  margin-bottom: 7px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .05em;
+  text-transform: uppercase;
+}
+.recovery-card h2 { margin-bottom: 6px; }
+.recovery-card p { margin-bottom: 10px; color: var(--muted); font-size: 13px; line-height: 1.45; }
+.recovery-card ul { margin: 0; padding-left: 19px; font-size: 13px; line-height: 1.45; }
+.recovery-card li + li { margin-top: 5px; }
+
+.health-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.health-metric, .intake-card, .nutrition-summary, .micro-plan, .workout-card {
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface);
+}
+.health-metric { min-width: 0; padding: 13px 10px; }
+.health-metric > span, .intake-card > span, .micro-plan > span, .nutrition-summary > span {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.health-metric strong, .intake-card strong { display: block; overflow-wrap: anywhere; font-size: 17px; }
+.health-metric small, .intake-card small, .nutrition-summary small {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.35;
+}
+.health-progress {
+  display: block;
+  height: 4px;
+  margin-top: 9px;
+  overflow: hidden;
+  border-radius: 4px;
+  background: var(--border);
+}
+.health-progress i { display: block; height: 100%; border-radius: inherit; background: var(--accent); }
+.health-connect { margin-top: 10px; }
+.health-connect .profile-fields { padding-top: 14px; }
+
+.intake-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.intake-card { min-width: 0; padding: 14px; }
+.counter-actions { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; margin-top: 12px; }
+.counter-actions button {
+  min-height: 36px;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--bg);
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 700;
+}
+.counter-actions button:disabled { opacity: .55; }
+.nutrition-summary { display: grid; grid-template-columns: auto 1fr; gap: 3px 12px; align-items: baseline; margin-top: 10px; padding: 13px 14px; }
+.nutrition-summary > span { grid-row: 1 / 3; margin: 0; }
+.nutrition-summary strong { font-size: 14px; }
+.nutrition-summary small { margin: 0; }
+.health-goals { margin-top: 12px; border-top: 1px solid var(--border); }
+.health-goals summary, .training-history > summary { padding: 14px 0; color: var(--accent); font-size: 13px; font-weight: 700; cursor: pointer; }
+.health-goals form { padding-bottom: 6px; }
+
+.micro-plan { margin-bottom: 12px; padding: 15px; border-left: 3px solid var(--accent); }
+.micro-plan.recovery { border-left-color: var(--warning); }
+.micro-plan strong { display: block; font-size: 15px; }
+.micro-plan p { margin: 5px 0 0; color: var(--muted); font-size: 12px; line-height: 1.45; }
+.workout-list { display: grid; gap: 9px; }
+.workout-card { padding: 14px; }
+.workout-heading { display: flex; gap: 10px; align-items: flex-start; justify-content: space-between; }
+.workout-heading strong, .workout-heading span { display: block; }
+.workout-heading strong { font-size: 14px; line-height: 1.35; }
+.workout-heading span { margin-top: 3px; color: var(--muted); font-size: 11px; }
+.workout-heading b { flex: 0 0 auto; color: var(--accent); font-size: 10px; font-weight: 650; }
+.workout-card > p { margin: 9px 0 0; color: var(--muted); font-size: 12px; line-height: 1.4; }
+.workout-card details { margin-top: 10px; }
+.workout-card summary { color: var(--accent); font-size: 12px; cursor: pointer; }
+.exercise-list { display: grid; gap: 7px; margin: 10px 0 0; padding: 0; list-style: none; }
+.exercise-list li { display: flex; gap: 8px; justify-content: space-between; font-size: 12px; }
+.exercise-list small { flex: 0 0 auto; color: var(--muted); }
+.workout-result { color: var(--text) !important; }
+.training-history { margin-top: 10px; }
+.medical-disclaimer { margin: 0 4px 18px; color: var(--muted); font-size: 11px; line-height: 1.4; text-align: center; }
+
 .primary-button {
   min-height: 44px;
   padding: 0 17px;
@@ -385,7 +491,7 @@ h3 { margin-bottom: 3px; font-size: 16px; line-height: 1.3; }
   left: 0;
   z-index: 9;
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(5, 1fr);
   min-height: calc(var(--nav-height) + env(safe-area-inset-bottom));
   padding: 6px max(8px, env(safe-area-inset-right)) env(safe-area-inset-bottom) max(8px, env(safe-area-inset-left));
   border-top: 1px solid var(--border);
@@ -403,7 +509,7 @@ h3 { margin-bottom: 3px; font-size: 16px; line-height: 1.3; }
   border-radius: 12px;
   background: transparent;
   color: var(--muted);
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 650;
   cursor: pointer;
 }

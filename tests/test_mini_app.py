@@ -5,7 +5,7 @@ import hmac
 import json
 import time as time_module
 import unittest
-from datetime import datetime, time
+from datetime import date, datetime, time, timedelta
 from urllib.parse import urlencode
 from zoneinfo import ZoneInfo
 
@@ -13,9 +13,17 @@ from aiohttp.test_utils import TestClient, TestServer
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from bot.database.models import Base, CalendarEvent
+from bot.database.models import (
+    Base,
+    CalendarEvent,
+    DailyWellnessLog,
+    HealthSnapshot,
+    TrainingProfile,
+    WorkoutSession,
+)
 from bot.services.calendar_service import CalendarService
 from bot.services.conflict_service import ConflictService
+from bot.services.health_service import HealthService
 from bot.services.hse_calendar_service import HSECalendarService
 from bot.services.mini_app_server import (
     MiniAppAuthError,
@@ -23,9 +31,11 @@ from bot.services.mini_app_server import (
     TelegramInitDataValidator,
 )
 from bot.services.time_service import TimeService
+from bot.services.training_service import TrainingService
 from bot.services.user_profile_service import UserProfileService
 
 CALENDAR_TOKEN = "calendar-secret-calendar-secret-1234"
+HEALTH_TOKEN = "health-secret-health-secret-health-1234"
 
 
 class FixedTimeService(TimeService):
@@ -99,6 +109,15 @@ class MiniAppAPITests(unittest.IsolatedAsyncioTestCase):
         )
         calendar = CalendarService(self.clock)
         hse = HSECalendarService(calendar, self.sessions, self.clock, user_id=42)
+        health = HealthService(
+            None,
+            self.sessions,
+            self.clock,
+            None,
+            42,
+            True,
+            time(18),
+        )
         self.service = MiniAppServer(
             "127.0.0.1",
             0,
@@ -110,10 +129,17 @@ class MiniAppAPITests(unittest.IsolatedAsyncioTestCase):
             calendar,
             ConflictService(),
             hse,
+            health,
+            TrainingService(calendar),
             calendar_bridge_token=CALENDAR_TOKEN,
             calendar_bridge_owner_id=42,
             calendar_bridge_public_url=(
                 "https://assistant.example.com/assistant/bridge/v1/hse-calendar"
+            ),
+            health_bridge_token=HEALTH_TOKEN,
+            health_bridge_owner_id=42,
+            health_bridge_public_url=(
+                "https://assistant.example.com/assistant/bridge/v1/health-snapshot"
             ),
             dev_mode=True,
         )
@@ -133,6 +159,7 @@ class MiniAppAPITests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('class="bottom-nav"', html)
         self.assertIn('data-view="planner"', html)
         self.assertIn('data-view="tasks"', html)
+        self.assertIn('data-view="health"', html)
         self.assertIn("assets/resource_store.js", html)
         self.assertIn("https://telegram.org/js/telegram-web-app.js", html)
         self.assertIn("frame-ancestors", response.headers["Content-Security-Policy"])
@@ -212,7 +239,7 @@ class MiniAppAPITests(unittest.IsolatedAsyncioTestCase):
             json={
                 "timezone": "Asia/Almaty",
                 "home": "Хамовники",
-                "daily_focus_minutes": 240,
+                "daily_focus_minutes": 1440,
             },
         )
         profile = await response.json()
@@ -220,7 +247,10 @@ class MiniAppAPITests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(200, response.status)
         self.assertEqual("Asia/Almaty", profile["timezone"])
         self.assertEqual("Хамовники", profile["home"])
-        self.assertEqual(240, profile["planning"]["daily_focus_minutes"])
+        self.assertEqual(1440, profile["planning"]["daily_focus_minutes"])
+        self.assertEqual(480, profile["planning"]["auto_planning_minutes"])
+        self.assertEqual("overload", profile["planning"]["focus_load_level"])
+        self.assertIn("сон", profile["planning"]["focus_warning"])
 
     async def test_shortcut_config_is_visible_only_to_owner(self):
         response = await self.client.get(
@@ -471,3 +501,139 @@ class MiniAppAPITests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("fresh", profile["hse"]["sync_status"])
         self.assertEqual("updated", profile["hse"]["last_result"])
         self.assertIsNotNone(profile["hse"]["synced_at"])
+
+    async def test_empty_health_is_ready_and_intake_is_independent(self):
+        empty_response = await self.client.get(
+            "/api/v1/health",
+            headers=self.headers,
+        )
+        empty = await empty_response.json()
+
+        self.assertEqual(200, empty_response.status)
+        self.assertFalse(empty["apple_health"]["connected"])
+        self.assertEqual("unknown", empty["recovery"]["level"])
+        self.assertEqual([], empty["training"]["upcoming"])
+
+        goals_response = await self.client.patch(
+            "/api/v1/health/goals",
+            headers=self.headers,
+            json={"water_ml": 2500, "protein_g": 140},
+        )
+        goals = await goals_response.json()
+        self.assertEqual(200, goals_response.status)
+        self.assertEqual({"water_ml": 2500, "protein_g": 140}, goals["goals"])
+
+        intake_response = await self.client.post(
+            "/api/v1/health/intake",
+            headers=self.headers,
+            json={"water_ml": 250, "protein_g": 20},
+        )
+        intake = await intake_response.json()
+        self.assertEqual(200, intake_response.status)
+        self.assertEqual(250, intake["intake"]["water_ml"])
+        self.assertEqual(20, intake["intake"]["protein_g"])
+        async with self.sessions() as session:
+            daily_log = await session.scalar(select(DailyWellnessLog))
+        self.assertEqual(date(2026, 9, 9), daily_log.date)
+
+    async def test_health_bridge_recovery_and_training_dashboard(self):
+        unauthorized = await self.client.post(
+            "/bridge/v1/health-snapshot",
+            json={"date": "2026-09-09", "steps": 1000},
+        )
+        self.assertEqual(401, unauthorized.status)
+
+        saved_response = await self.client.post(
+            "/bridge/v1/health-snapshot",
+            json={
+                "token": HEALTH_TOKEN,
+                "date": "2026-09-09",
+                "steps": 3200,
+                "step_goal": 9000,
+                "sleep_minutes": 330,
+                "workout_minutes": 0,
+                "active_energy_kcal": 180,
+                "resting_heart_rate": 58,
+                "hrv_ms": 47,
+            },
+        )
+        saved = await saved_response.json()
+        self.assertEqual(200, saved_response.status)
+        self.assertEqual("saved", saved["status"])
+        self.assertEqual(330, saved["sleep_minutes"])
+
+        async with self.sessions() as session:
+            profile = TrainingProfile(
+                user_id=42,
+                goal="Прогрессировать в базовых упражнениях",
+                active=True,
+            )
+            session.add(profile)
+            session.add_all([
+                WorkoutSession(
+                    user_id=42,
+                    title="Силовая A",
+                    scheduled_for=datetime(
+                        2026, 9, 10, 18, 0,
+                        tzinfo=ZoneInfo("Europe/Moscow"),
+                    ),
+                    status="planned",
+                    details_json=json.dumps({
+                        "estimated_minutes": 55,
+                        "focus": "Ноги и жим",
+                        "exercises": [{
+                            "name": "Присед",
+                            "sets": 3,
+                            "reps": "6–8",
+                            "progression_note": "Добавь один повтор при чистой технике.",
+                        }],
+                    }, ensure_ascii=False),
+                ),
+                WorkoutSession(
+                    user_id=42,
+                    title="Силовая B",
+                    scheduled_for=datetime(
+                        2026, 9, 7, 18, 0,
+                        tzinfo=ZoneInfo("Europe/Moscow"),
+                    ),
+                    completed_at=datetime(
+                        2026, 9, 7, 19, 0,
+                        tzinfo=ZoneInfo("Europe/Moscow"),
+                    ),
+                    status="completed",
+                    rpe=9,
+                    notes="Тяжело",
+                ),
+            ])
+            await session.commit()
+
+        dashboard_response = await self.client.get(
+            "/api/v1/health",
+            headers=self.headers,
+        )
+        dashboard = await dashboard_response.json()
+        self.assertEqual(200, dashboard_response.status)
+        self.assertTrue(dashboard["apple_health"]["connected"])
+        self.assertEqual("overload", dashboard["recovery"]["level"])
+        self.assertIn("восстановление", dashboard["recovery"]["title"].lower())
+        self.assertEqual("Силовая A", dashboard["training"]["upcoming"][0]["title"])
+        self.assertEqual("Силовая B", dashboard["training"]["history"][0]["title"])
+        self.assertEqual(
+            "recovery",
+            dashboard["training"]["micro_plan"]["level"],
+        )
+
+        config_response = await self.client.get(
+            "/api/v1/health/shortcut-config",
+            headers=self.headers,
+        )
+        config = await config_response.json()
+        self.assertEqual(200, config_response.status)
+        self.assertEqual(HEALTH_TOKEN, config["token"])
+        self.assertIn("sleep_minutes", config["fields"])
+
+        async with self.sessions() as session:
+            snapshots = list(
+                (await session.execute(select(HealthSnapshot))).scalars().all()
+            )
+        self.assertEqual(1, len(snapshots))

@@ -198,6 +198,34 @@ class ProfileAndPlanningTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(first_count, second_count)
             self.assertEqual(first["saved"], second["saved"])
 
+    async def test_declared_24_hour_focus_keeps_safe_auto_planning_cap(self):
+        now = datetime(2026, 8, 3, 9, 0, tzinfo=self.tz)
+        calendar = CalendarService(self.clock)
+        async with self.sessions() as session:
+            profile = UserProfile(user_id=1, timezone="Europe/Moscow")
+            PreferencesService().set(profile, "daily_focus_minutes", 1440)
+            session.add(profile)
+            session.add(Task(
+                user_id=1,
+                title="Большой объём работы",
+                planning_state="ready",
+                estimated_minutes=720,
+                duration_confirmed=True,
+            ))
+            await session.commit()
+
+            plan = await calendar.build_day_plan(
+                session,
+                1,
+                now,
+                persist_schedule=False,
+            )
+
+        self.assertEqual(1440, plan["planning"]["daily_focus_minutes"])
+        self.assertEqual(480, plan["planning"]["auto_planning_minutes"])
+        self.assertEqual("overload", plan["planning"]["focus_load_level"])
+        self.assertLessEqual(plan["capacity_minutes"], 480)
+
 
 if __name__ == "__main__":
     unittest.main()

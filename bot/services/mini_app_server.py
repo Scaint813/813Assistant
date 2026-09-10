@@ -17,9 +17,12 @@ from sqlalchemy import select
 from bot.database.models import (
     CalendarEvent,
     CalendarSyncState,
+    DailyWellnessLog,
+    HealthSnapshot,
     Reminder,
     Task,
     TaskPlanBlock,
+    TrainingProfile,
     WorkoutSession,
 )
 from bot.services.content_quality import is_meaningful_task
@@ -107,10 +110,15 @@ class MiniAppServer:
         calendar_service,
         conflict_service,
         hse_calendar_service,
+        health_service=None,
+        training_service=None,
         *,
         calendar_bridge_token: str = "",
         calendar_bridge_owner_id: int | None = None,
         calendar_bridge_public_url: str = "",
+        health_bridge_token: str = "",
+        health_bridge_owner_id: int | None = None,
+        health_bridge_public_url: str = "",
         dev_mode: bool = False,
     ):
         self.host = host
@@ -122,6 +130,8 @@ class MiniAppServer:
         self.calendar_service = calendar_service
         self.conflict_service = conflict_service
         self.hse_calendar_service = hse_calendar_service
+        self.health_service = health_service
+        self.training_service = training_service
         default_owner_id = self.allowed_user_ids[0] if self.allowed_user_ids else 0
         self.calendar_bridge_owner_id = int(
             calendar_bridge_owner_id or default_owner_id
@@ -133,6 +143,17 @@ class MiniAppServer:
             else ""
         )
         self.calendar_bridge_public_url = calendar_bridge_public_url
+        default_health_owner_id = self.allowed_user_ids[0] if self.allowed_user_ids else 0
+        self.health_bridge_owner_id = int(
+            health_bridge_owner_id or default_health_owner_id
+        )
+        health_bridge_token = health_bridge_token.strip()
+        self.health_bridge_token = (
+            health_bridge_token
+            if len(health_bridge_token) >= 32 and self.health_bridge_owner_id > 0
+            else ""
+        )
+        self.health_bridge_public_url = health_bridge_public_url
         self.preferences_service = PreferencesService()
         self.validator = TelegramInitDataValidator(bot_token, allowed_user_ids)
         self.dev_mode = dev_mode
@@ -163,6 +184,13 @@ class MiniAppServer:
         app.router.add_patch("/api/v1/tasks/{task_id}", self._update_task)
         app.router.add_get("/api/v1/profile", self._profile)
         app.router.add_patch("/api/v1/profile", self._update_profile)
+        app.router.add_get("/api/v1/health", self._health_overview)
+        app.router.add_post("/api/v1/health/intake", self._update_health_intake)
+        app.router.add_patch("/api/v1/health/goals", self._update_health_goals)
+        app.router.add_get(
+            "/api/v1/health/shortcut-config",
+            self._health_shortcut_config,
+        )
         app.router.add_post("/api/v1/hse/import", self._import_hse)
         app.router.add_get(
             "/api/v1/hse/shortcut-config",
@@ -171,6 +199,10 @@ class MiniAppServer:
         app.router.add_post(
             "/bridge/v1/hse-calendar",
             self._receive_hse_calendar,
+        )
+        app.router.add_post(
+            "/bridge/v1/health-snapshot",
+            self._receive_health_snapshot,
         )
         return app
 
@@ -194,9 +226,19 @@ class MiniAppServer:
     @web.middleware
     async def _auth_middleware(self, request, handler):
         if request.path.startswith("/bridge/v1/"):
-            if not self.calendar_bridge_token:
-                raise web.HTTPServiceUnavailable(reason="calendar bridge is disabled")
-            expected = f"Bearer {self.calendar_bridge_token}"
+            if request.path == "/bridge/v1/hse-calendar":
+                bridge_token = self.calendar_bridge_token
+                owner_id = self.calendar_bridge_owner_id
+                disabled_reason = "calendar bridge is disabled"
+            elif request.path == "/bridge/v1/health-snapshot":
+                bridge_token = self.health_bridge_token
+                owner_id = self.health_bridge_owner_id
+                disabled_reason = "health bridge is disabled"
+            else:
+                raise web.HTTPNotFound()
+            if not bridge_token:
+                raise web.HTTPServiceUnavailable(reason=disabled_reason)
+            expected = f"Bearer {bridge_token}"
             supplied = request.headers.get("Authorization", "")
             if not hmac.compare_digest(supplied, expected):
                 try:
@@ -208,12 +250,12 @@ class MiniAppServer:
                     body_token = str(payload.get("token") or "").strip()
                 body_token_valid = hmac.compare_digest(
                     body_token,
-                    self.calendar_bridge_token,
+                    bridge_token,
                 ) or hmac.compare_digest(body_token, expected)
                 if not body_token_valid:
                     raise web.HTTPUnauthorized(reason="invalid calendar bridge token")
                 request["bridge_payload"] = payload
-            request["user_id"] = self.calendar_bridge_owner_id
+            request["user_id"] = owner_id
             return await handler(request)
         if not request.path.startswith("/api/v1/"):
             return await handler(request)
@@ -503,7 +545,7 @@ class MiniAppServer:
                 hse_sync_status = "fresh"
             else:
                 hse_sync_status = "stale"
-            prefs = self.preferences_service.get_all(profile)
+            planning = self.preferences_service.planning(profile)
             try:
                 context = json.loads(profile.preferences_json or "{}")
             except json.JSONDecodeError:
@@ -514,9 +556,12 @@ class MiniAppServer:
             "timezone_options": self.user_profile_service.options(now),
             "home": str(context.get("home") or ""),
             "planning": {
-                "daily_focus_minutes": prefs["daily_focus_minutes"],
-                "workday_start_hour": prefs["workday_start_hour"],
-                "workday_end_hour": prefs["workday_end_hour"],
+                "daily_focus_minutes": planning["daily_focus_minutes"],
+                "auto_planning_minutes": planning["auto_planning_minutes"],
+                "focus_load_level": planning["focus_load_level"],
+                "focus_warning": planning["focus_warning"],
+                "workday_start_hour": planning["workday_start_hour"],
+                "workday_end_hour": planning["workday_end_hour"],
             },
             "hse": {
                 "events": hse_status["events"],
@@ -553,17 +598,404 @@ class MiniAppServer:
                 self.preferences_service.set(
                     profile,
                     "daily_focus_minutes",
-                    self._bounded_int(payload["daily_focus_minutes"], 60, 480),
+                    self._bounded_int(payload["daily_focus_minutes"], 60, 1440),
                 )
             if "home" in payload:
                 try:
                     context = json.loads(profile.preferences_json or "{}")
                 except json.JSONDecodeError:
                     context = {}
-                context["home"] = " ".join(str(payload["home"] or "").split())[:255]
+                start_point = " ".join(str(payload["home"] or "").split())[:255]
+                context["home"] = (
+                    start_point[:1].upper() + start_point[1:]
+                    if start_point
+                    else ""
+                )
                 profile.preferences_json = json.dumps(context, ensure_ascii=False)
             await session.commit()
         return await self._profile(request)
+
+    async def _health_overview(self, request: web.Request) -> web.Response:
+        async with self.session_factory() as session:
+            payload = await self._health_payload(session, request["user_id"])
+        return web.json_response(payload)
+
+    async def _health_payload(self, session, user_id: int) -> dict:
+        now, profile = await self._user_now(session, user_id)
+        snapshot = await session.scalar(
+            select(HealthSnapshot)
+            .where(HealthSnapshot.user_id == user_id)
+            .order_by(
+                HealthSnapshot.date.desc(),
+                HealthSnapshot.captured_at.desc(),
+            )
+            .limit(1)
+        )
+        daily_log = await session.scalar(
+            select(DailyWellnessLog).where(
+                DailyWellnessLog.user_id == user_id,
+                DailyWellnessLog.date == now.date(),
+            )
+        )
+        training_profile = await session.scalar(
+            select(TrainingProfile).where(TrainingProfile.user_id == user_id)
+        )
+        upcoming_result = await session.execute(
+            select(WorkoutSession)
+            .where(
+                WorkoutSession.user_id == user_id,
+                WorkoutSession.status.in_(("planned", "in_progress")),
+                WorkoutSession.scheduled_for >= now - timedelta(days=1),
+                WorkoutSession.scheduled_for < now + timedelta(days=14),
+            )
+            .order_by(WorkoutSession.scheduled_for.asc())
+            .limit(8)
+        )
+        upcoming = list(upcoming_result.scalars().all())
+        history_result = await session.execute(
+            select(WorkoutSession)
+            .where(
+                WorkoutSession.user_id == user_id,
+                WorkoutSession.status.in_(("completed", "skipped")),
+            )
+            .order_by(
+                WorkoutSession.completed_at.desc(),
+                WorkoutSession.scheduled_for.desc(),
+            )
+            .limit(6)
+        )
+        history = list(history_result.scalars().all())
+        planning = self.preferences_service.planning(profile)
+        goals = self.preferences_service.wellness_goals(profile)
+        snapshot_payload = self._health_snapshot_payload(snapshot, now)
+        workout_payloads = [
+            self._workout_payload(item, now) for item in upcoming
+        ]
+        history_payloads = [
+            self._workout_payload(item, now) for item in history
+        ]
+        recovery = self._recovery_payload(
+            snapshot_payload,
+            planning,
+            now,
+        )
+        return {
+            "now": now.isoformat(),
+            "timezone": getattr(now.tzinfo, "key", str(now.tzinfo)),
+            "apple_health": {
+                "connected": snapshot is not None,
+                "bridge_enabled": bool(
+                    self.health_bridge_token
+                    and user_id == self.health_bridge_owner_id
+                ),
+                "snapshot": snapshot_payload,
+            },
+            "recovery": recovery,
+            "intake": {
+                "water_ml": daily_log.water_ml if daily_log else 0,
+                "protein_g": daily_log.protein_g if daily_log else 0,
+                "calories_kcal": daily_log.calories_kcal if daily_log else 0,
+                "fat_g": daily_log.fat_g if daily_log else 0,
+                "carbs_g": daily_log.carbs_g if daily_log else 0,
+            },
+            "goals": goals,
+            "training": {
+                "configured": bool(training_profile and training_profile.active),
+                "goal": training_profile.goal if training_profile else "",
+                "upcoming": workout_payloads,
+                "history": history_payloads,
+                "micro_plan": self._training_micro_plan(
+                    training_profile,
+                    workout_payloads,
+                    history_payloads,
+                    snapshot_payload,
+                ),
+            },
+            "medical_disclaimer": (
+                "Показатели используются для бытового планирования, а не для "
+                "диагностики или назначения лечения."
+            ),
+        }
+
+    async def _update_health_intake(self, request: web.Request) -> web.Response:
+        payload = await self._json_object(request)
+        limits = {
+            "water_ml": (-2_000, 2_000, 20_000),
+            "protein_g": (-200, 200, 1_000),
+            "calories_kcal": (-5_000, 5_000, 20_000),
+            "fat_g": (-300, 300, 1_000),
+            "carbs_g": (-500, 500, 2_000),
+        }
+        deltas = {}
+        for field, (minimum, maximum, _total_maximum) in limits.items():
+            if field in payload:
+                deltas[field] = self._bounded_int(
+                    payload[field], minimum, maximum
+                )
+        if not deltas:
+            raise web.HTTPBadRequest(reason="at least one intake delta is required")
+        user_id = request["user_id"]
+        async with self.session_factory() as session:
+            now, _profile = await self._user_now(session, user_id)
+            daily_log = await session.scalar(
+                select(DailyWellnessLog).where(
+                    DailyWellnessLog.user_id == user_id,
+                    DailyWellnessLog.date == now.date(),
+                )
+            )
+            if daily_log is None:
+                daily_log = DailyWellnessLog(user_id=user_id, date=now.date())
+                session.add(daily_log)
+            for field, delta in deltas.items():
+                total_maximum = limits[field][2]
+                current = int(getattr(daily_log, field) or 0)
+                setattr(
+                    daily_log,
+                    field,
+                    max(0, min(total_maximum, current + delta)),
+                )
+            await session.commit()
+            result = await self._health_payload(session, user_id)
+        return web.json_response(result)
+
+    async def _update_health_goals(self, request: web.Request) -> web.Response:
+        payload = await self._json_object(request)
+        user_id = request["user_id"]
+        async with self.session_factory() as session:
+            profile = await self.user_profile_service.get(session, user_id)
+            if "water_ml" in payload:
+                self.preferences_service.set(
+                    profile,
+                    "water_goal_ml",
+                    self._bounded_int(payload["water_ml"], 0, 10_000),
+                )
+            if "protein_g" in payload:
+                self.preferences_service.set(
+                    profile,
+                    "protein_goal_g",
+                    self._bounded_int(payload["protein_g"], 0, 400),
+                )
+            await session.commit()
+            result = await self._health_payload(session, user_id)
+        return web.json_response(result)
+
+    async def _health_shortcut_config(self, request: web.Request) -> web.Response:
+        if (
+            not self.health_bridge_token
+            or request["user_id"] != self.health_bridge_owner_id
+        ):
+            raise web.HTTPForbidden(reason="health bridge is unavailable")
+        return web.json_response({
+            "endpoint": self.health_bridge_public_url,
+            "token": self.health_bridge_token,
+            "morning_trigger": "08:00",
+            "evening_trigger": "18:00",
+            "fields": [
+                "date",
+                "steps",
+                "step_goal",
+                "sleep_minutes",
+                "workout_minutes",
+                "active_energy_kcal",
+                "resting_heart_rate",
+                "hrv_ms",
+            ],
+        })
+
+    async def _receive_health_snapshot(self, request: web.Request) -> web.Response:
+        if self.health_service is None:
+            raise web.HTTPServiceUnavailable(reason="health service is disabled")
+        payload = request.get("bridge_payload")
+        if payload is None:
+            payload = await self._json_object(request)
+        async with self.session_factory() as session:
+            try:
+                row = await self.health_service.upsert_snapshot(
+                    session,
+                    request["user_id"],
+                    payload,
+                )
+            except (TypeError, ValueError) as exc:
+                raise web.HTTPBadRequest(reason=f"invalid health snapshot: {exc}") from exc
+            await session.commit()
+            result = {
+                "status": "saved",
+                "date": row.date.isoformat(),
+                "steps": row.steps,
+                "sleep_minutes": row.sleep_minutes,
+            }
+        return web.json_response(result)
+
+    @staticmethod
+    def _health_snapshot_payload(snapshot: HealthSnapshot | None, now: datetime) -> dict | None:
+        if snapshot is None:
+            return None
+        captured_at = ensure_aware(snapshot.captured_at, now.tzinfo)
+        return {
+            "date": snapshot.date.isoformat(),
+            "fresh": snapshot.date == now.date(),
+            "captured_at": captured_at.isoformat() if captured_at else None,
+            "steps": snapshot.steps,
+            "step_goal": snapshot.step_goal,
+            "active_energy_kcal": snapshot.active_energy_kcal,
+            "workout_minutes": snapshot.workout_minutes,
+            "sleep_minutes": snapshot.sleep_minutes,
+            "resting_heart_rate": snapshot.resting_heart_rate,
+            "hrv_ms": snapshot.hrv_ms,
+        }
+
+    @staticmethod
+    def _recovery_payload(snapshot: dict | None, planning: dict, now: datetime) -> dict:
+        recommendations = []
+        level = "good"
+        title = "Нагрузка выглядит управляемой"
+        if planning.get("focus_warning"):
+            recommendations.append(planning["focus_warning"])
+            level = "overload" if planning["focus_load_level"] == "overload" else "watch"
+            title = "В профиле задана высокая нагрузка"
+        if not snapshot:
+            return {
+                "level": "unknown",
+                "title": "Нет данных Apple Health",
+                "message": "Подключи сон и шаги, чтобы советы опирались на фактическое восстановление.",
+                "recommendations": recommendations,
+            }
+        if not snapshot["fresh"]:
+            return {
+                "level": "unknown",
+                "title": "Данные Apple Health устарели",
+                "message": "Запусти синхронизацию: старые показатели не используются для решений о нагрузке.",
+                "recommendations": recommendations,
+            }
+        sleep_minutes = int(snapshot.get("sleep_minutes") or 0)
+        if 0 < sleep_minutes < 360:
+            level = "overload"
+            title = "Сегодня восстановление важнее объёма"
+            recommendations.insert(
+                0,
+                "Сон меньше 6 часов: сократи интенсивную нагрузку и освободи время для сна.",
+            )
+        elif 0 < sleep_minutes < 420 and level != "overload":
+            level = "watch"
+            title = "Сон ниже желаемого"
+            recommendations.insert(
+                0,
+                "Не наращивай нагрузку автоматически; оставь запас на паузы и более ранний сон.",
+            )
+        step_goal = int(snapshot.get("step_goal") or 0)
+        steps = int(snapshot.get("steps") or 0)
+        if (
+            now.hour >= 18
+            and step_goal > 0
+            and steps < step_goal
+            and int(snapshot.get("workout_minutes") or 0) < 30
+        ):
+            gap = step_goal - steps
+            recommendations.append(
+                f"До личной цели не хватает {gap:,} шагов — подойдёт спокойная прогулка."
+                .replace(",", " ")
+            )
+            if level == "good":
+                level = "watch"
+                title = "Стоит добавить немного движения"
+        message = (
+            "Сигналы основаны на сегодняшнем сне, движении и выбранной рабочей нагрузке."
+        )
+        if not recommendations:
+            recommendations.append(
+                "Сохраняй обычный режим и повышай нагрузку постепенно."
+            )
+        return {
+            "level": level,
+            "title": title,
+            "message": message,
+            "recommendations": recommendations,
+        }
+
+    @staticmethod
+    def _workout_payload(workout: WorkoutSession, now: datetime) -> dict:
+        try:
+            details = json.loads(workout.details_json or "{}")
+        except json.JSONDecodeError:
+            details = {}
+        exercises = []
+        for exercise in details.get("exercises", [])[:6]:
+            if not isinstance(exercise, dict):
+                continue
+            exercises.append({
+                "name": str(exercise.get("name") or "Упражнение")[:255],
+                "sets": int(exercise.get("sets") or 0),
+                "reps": str(exercise.get("reps") or ""),
+                "progression": str(exercise.get("progression") or ""),
+                "progression_note": str(exercise.get("progression_note") or ""),
+                "suggested_weight_kg": str(
+                    exercise.get("suggested_weight_kg") or ""
+                ),
+            })
+        scheduled_for = ensure_aware(workout.scheduled_for, now.tzinfo)
+        completed_at = ensure_aware(workout.completed_at, now.tzinfo)
+        return {
+            "id": workout.id,
+            "title": workout.title,
+            "status": workout.status,
+            "scheduled_for": scheduled_for.isoformat(),
+            "completed_at": completed_at.isoformat() if completed_at else None,
+            "rpe": workout.rpe,
+            "notes": workout.notes,
+            "activity_type": workout.activity_type,
+            "load_level": workout.load_level,
+            "duration_minutes": int(details.get("estimated_minutes") or 0),
+            "focus": str(details.get("focus") or ""),
+            "exercises": exercises,
+        }
+
+    @staticmethod
+    def _training_micro_plan(
+        profile: TrainingProfile | None,
+        upcoming: list[dict],
+        history: list[dict],
+        snapshot: dict | None,
+    ) -> dict:
+        if profile is None or not profile.active:
+            return {
+                "level": "setup",
+                "title": "Сначала задай тренировочную цель",
+                "text": "Напиши боту «составь план тренировок» — готовый план появится здесь.",
+            }
+        if not upcoming:
+            return {
+                "level": "empty",
+                "title": "Нет ближайшей тренировки",
+                "text": "Собери новую тренировочную неделю в чате с ботом.",
+            }
+        next_workout = upcoming[0]
+        sleep_minutes = int((snapshot or {}).get("sleep_minutes") or 0)
+        if (snapshot or {}).get("fresh") and 0 < sleep_minutes < 360:
+            return {
+                "level": "recovery",
+                "title": "Облегчи ближайшую тренировку",
+                "text": "После короткого сна не повышай вес: сократи объём или выбери спокойное восстановление.",
+            }
+        guidance = [
+            item["progression_note"]
+            for item in next_workout["exercises"]
+            if item.get("progression_note")
+        ]
+        if guidance:
+            return {
+                "level": "progress",
+                "title": "Микро-план прогрессии",
+                "text": " ".join(guidance[:2]),
+            }
+        latest_completed = next(
+            (item for item in history if item["status"] == "completed"),
+            None,
+        )
+        if latest_completed and int(latest_completed.get("rpe") or 0) >= 9:
+            text = "Прошлая тренировка была тяжёлой: сохрани или немного снизь нагрузку."
+        else:
+            text = "Сохрани чистую технику; повышай только один параметр — вес или повторы."
+        return {"level": "steady", "title": "Следующий небольшой шаг", "text": text}
 
     async def _import_hse(self, request: web.Request) -> web.Response:
         content = await request.read()

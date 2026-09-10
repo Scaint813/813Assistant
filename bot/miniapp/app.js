@@ -6,9 +6,16 @@
     view: "today",
     period: "today",
     shortcutConfig: null,
+    healthShortcutConfig: null,
     timezone: undefined,
   };
-  const titles = { today: "Сегодня", planner: "Планнер", tasks: "Задачи", profile: "Профиль" };
+  const titles = {
+    today: "Сегодня",
+    planner: "Планнер",
+    tasks: "Задачи",
+    health: "Здоровье",
+    profile: "Профиль",
+  };
   const periods = { today: "Сегодня", tomorrow: "Завтра", week: "Неделя" };
   const els = {
     view: document.querySelector("#view"),
@@ -83,10 +90,12 @@
   function scheduleKey(period) { return `schedule:${period}`; }
   function currentResourceKey() {
     if (state.view === "profile") return "profile";
+    if (state.view === "health") return "health";
     return scheduleKey(state.view === "planner" ? state.period : "today");
   }
   function loadResource(key) {
     if (key === "profile") return api("api/v1/profile");
+    if (key === "health") return api("api/v1/health");
     return api(`api/v1/state?period=${key.slice("schedule:".length)}`);
   }
 
@@ -218,11 +227,17 @@
     const bridgeStatus = profile.hse.iphone_bridge
       ? "В планнер попадает только календарь HSE; личные события остаются на iPhone."
       : "Серверный приёмник календаря пока выключен.";
+    const focusWarning = profile.planning.focus_warning
+      ? `<div class="notice ${profile.planning.focus_load_level === "overload" ? "danger" : ""}"><strong>Высокая нагрузка.</strong> ${escapeHTML(profile.planning.focus_warning)}</div>`
+      : "";
     return `<section class="profile-panel"><div class="panel-heading"><h2>${escapeHTML(profile.name)}</h2><p>Время и дорога учитываются в расписании.</p></div>
       <form class="profile-fields" id="profile-form">
         <label class="field"><span>Город и часовой пояс</span><select name="timezone">${options}</select></label>
-        <label class="field"><span>Откуда обычно начинаешь день</span><input name="home" value="${escapeHTML(profile.home)}" maxlength="255" placeholder="Дом, район или адрес"></label>
-        <label class="field"><span>Фокус в день, минут</span><input name="daily_focus_minutes" type="number" min="60" max="480" step="15" value="${profile.planning.daily_focus_minutes}"></label>
+        <label class="field"><span>Стартовая точка для маршрутов (необязательно)</span><input name="home" value="${escapeHTML(profile.home)}" maxlength="255" placeholder="Район, метро или ориентир"></label>
+        <p class="helper">Точный адрес не нужен. Это только ориентир для примерного времени в дороге; помощник не проверяет существование адреса.</p>
+        <label class="field"><span>Желаемый фокус в день, минут</span><input name="daily_focus_minutes" type="number" min="60" max="1440" step="15" value="${profile.planning.daily_focus_minutes}"></label>
+        <p class="helper">Можно указать до 24 часов. Безопасный автоплан всё равно поставит не больше ${Math.round(profile.planning.auto_planning_minutes / 60)} ч фокуса и оставит время вне задач.</p>
+        ${focusWarning}
         <button class="primary-button full-width" type="submit">Сохранить профиль</button>
       </form></section>
       <section class="profile-panel"><div class="panel-heading"><h2>Синхронизация календаря HSE</h2><p>${profile.hse.events} ${plural(profile.hse.events, "событие", "события", "событий")} в ближайшем расписании</p></div>
@@ -258,6 +273,112 @@
       </details>`;
   }
 
+  function healthMetricHTML(label, value, hint, progress = null) {
+    const bar = progress === null
+      ? ""
+      : `<span class="health-progress" aria-hidden="true"><i style="width:${Math.max(0, Math.min(100, progress))}%"></i></span>`;
+    return `<article class="health-metric"><span>${escapeHTML(label)}</span><strong>${escapeHTML(value)}</strong><small>${escapeHTML(hint)}</small>${bar}</article>`;
+  }
+
+  function sleepValue(minutes) {
+    if (!minutes) return "—";
+    const hours = Math.floor(minutes / 60);
+    const rest = minutes % 60;
+    return rest ? `${hours} ч ${rest} мин` : `${hours} ч`;
+  }
+
+  function workoutHTML(workout, history = false) {
+    const statusLabels = {
+      planned: "запланирована",
+      in_progress: "идёт сейчас",
+      completed: "выполнена",
+      skipped: "пропущена",
+    };
+    const when = history && workout.completed_at ? workout.completed_at : workout.scheduled_for;
+    const exerciseRows = (workout.exercises || []).map((exercise) => {
+      const prescription = [
+        exercise.sets ? `${exercise.sets} подх.` : "",
+        exercise.reps ? `${exercise.reps} повт.` : "",
+        exercise.suggested_weight_kg ? `${exercise.suggested_weight_kg} кг` : "",
+      ].filter(Boolean).join(" · ");
+      return `<li><span>${escapeHTML(exercise.name)}</span>${prescription ? `<small>${escapeHTML(prescription)}</small>` : ""}</li>`;
+    }).join("");
+    return `<article class="workout-card">
+      <div class="workout-heading"><div><strong>${escapeHTML(workout.title)}</strong><span>${formatDate(when, { weekday: "short", day: "numeric", month: "short" })}, ${formatTime(when)}</span></div><b>${escapeHTML(statusLabels[workout.status] || workout.status)}</b></div>
+      ${workout.focus ? `<p>${escapeHTML(workout.focus)}</p>` : ""}
+      ${exerciseRows ? `<details><summary>Упражнения</summary><ul class="exercise-list">${exerciseRows}</ul></details>` : ""}
+      ${workout.rpe ? `<p class="workout-result">Нагрузка RPE ${escapeHTML(workout.rpe)}/10${workout.notes ? ` · ${escapeHTML(workout.notes)}` : ""}</p>` : ""}
+    </article>`;
+  }
+
+  function renderHealth(data) {
+    const snapshot = data.apple_health.snapshot;
+    const recovery = data.recovery;
+    const recommendations = (recovery.recommendations || [])
+      .map((item) => `<li>${escapeHTML(item)}</li>`).join("");
+    const sleep = snapshot ? Number(snapshot.sleep_minutes || 0) : 0;
+    const steps = snapshot ? Number(snapshot.steps || 0) : 0;
+    const stepGoal = snapshot ? Number(snapshot.step_goal || 0) : 0;
+    const workoutMinutes = snapshot ? Number(snapshot.workout_minutes || 0) : 0;
+    const stepProgress = stepGoal ? Math.round((steps / stepGoal) * 100) : null;
+    const waterGoal = Number(data.goals.water_ml || 0);
+    const proteinGoal = Number(data.goals.protein_g || 0);
+    const water = Number(data.intake.water_ml || 0);
+    const protein = Number(data.intake.protein_g || 0);
+    const upcoming = data.training.upcoming || [];
+    const history = data.training.history || [];
+    const healthStatus = snapshot
+      ? `${snapshot.fresh ? "Сегодня" : "Последние данные"} · ${formatDate(snapshot.captured_at, { day: "numeric", month: "short" })}, ${formatTime(snapshot.captured_at)}`
+      : "Apple Health ещё не подключён";
+    const setup = data.apple_health.bridge_enabled
+      ? `<button class="primary-button full-width" id="health-setup-button" type="button">Подключить Apple Health</button><div id="health-shortcut-setup" class="shortcut-setup hidden"></div>`
+      : '<div class="notice">Серверный приёмник Apple Health пока выключен.</div>';
+    return `<section class="recovery-card ${escapeHTML(recovery.level)}">
+        <span class="recovery-label">Баланс дня</span>
+        <h2>${escapeHTML(recovery.title)}</h2>
+        <p>${escapeHTML(recovery.message)}</p>
+        ${recommendations ? `<ul>${recommendations}</ul>` : ""}
+      </section>
+      <section class="section"><div class="section-heading"><h2>Сон и движение</h2><span>${escapeHTML(healthStatus)}</span></div>
+        <div class="health-grid">
+          ${healthMetricHTML("Сон", sleepValue(sleep), sleep ? "последняя ночь" : "нет данных")}
+          ${healthMetricHTML("Шаги", steps ? steps.toLocaleString("ru-RU") : "—", stepGoal ? `цель ${stepGoal.toLocaleString("ru-RU")}` : "нет данных", stepProgress)}
+          ${healthMetricHTML("Активность", workoutMinutes ? `${workoutMinutes} мин` : "—", snapshot?.active_energy_kcal ? `${snapshot.active_energy_kcal} ккал` : "нет данных")}
+        </div>
+        <div class="profile-panel health-connect"><div class="profile-fields"><p class="helper">Данные обновляются отдельно от календаря и задач: пустой Apple Health не блокирует остальные разделы.</p>${setup}</div></div>
+      </section>
+      <section class="section"><div class="section-heading"><h2>Сегодня</h2><span>быстрый учёт</span></div>
+        <div class="intake-grid">
+          <article class="intake-card"><span>Вода</span><strong>${water} мл</strong><small>${waterGoal ? `цель ${waterGoal} мл` : "личная цель не задана"}</small><span class="health-progress"><i style="width:${waterGoal ? Math.min(100, Math.round((water / waterGoal) * 100)) : 0}%"></i></span><div class="counter-actions"><button type="button" data-intake-field="water_ml" data-intake-delta="-250">−250</button><button type="button" data-intake-field="water_ml" data-intake-delta="250">+250</button></div></article>
+          <article class="intake-card"><span>Белок</span><strong>${protein} г</strong><small>${proteinGoal ? `цель ${proteinGoal} г` : "личная цель не задана"}</small><span class="health-progress"><i style="width:${proteinGoal ? Math.min(100, Math.round((protein / proteinGoal) * 100)) : 0}%"></i></span><div class="counter-actions"><button type="button" data-intake-field="protein_g" data-intake-delta="-20">−20</button><button type="button" data-intake-field="protein_g" data-intake-delta="20">+20</button></div></article>
+        </div>
+        <div class="nutrition-summary"><span>КБЖУ</span><strong>${Number(data.intake.calories_kcal || 0)} ккал</strong><small>Б ${protein} · Ж ${Number(data.intake.fat_g || 0)} · У ${Number(data.intake.carbs_g || 0)} г</small></div>
+        <details class="health-goals"><summary>Личные цели воды и белка</summary><form id="health-goals-form"><div class="form-row"><label class="field"><span>Вода, мл</span><input name="water_ml" type="number" min="0" max="10000" step="250" value="${waterGoal}"></label><label class="field"><span>Белок, г</span><input name="protein_g" type="number" min="0" max="400" step="5" value="${proteinGoal}"></label></div><button class="primary-button full-width" type="submit">Сохранить цели</button></form></details>
+      </section>
+      <section class="section"><div class="section-heading"><h2>Тренировки</h2><span>${upcoming.length} впереди</span></div>
+        <article class="micro-plan ${escapeHTML(data.training.micro_plan.level)}"><span>Следующий шаг</span><strong>${escapeHTML(data.training.micro_plan.title)}</strong><p>${escapeHTML(data.training.micro_plan.text)}</p></article>
+        ${upcoming.length ? `<div class="workout-list">${upcoming.map((item) => workoutHTML(item)).join("")}</div>` : '<div class="empty-state">Ближайших тренировок нет. Попроси бота составить план тренировок.</div>'}
+        ${history.length ? `<details class="training-history"><summary>История тренировок</summary><div class="workout-list">${history.map((item) => workoutHTML(item, true)).join("")}</div></details>` : ""}
+      </section>
+      <p class="medical-disclaimer">${escapeHTML(data.medical_disclaimer)}</p>`;
+  }
+
+  function healthShortcutSetupHTML(config) {
+    const fields = (config.fields || []).map((field) => `<code>${escapeHTML(field)}</code>`).join(", ");
+    return `<div class="setup-heading"><h3>Одна команда, два фоновых запуска</h3><p class="helper">Команда отправляет один словарь, поэтому циклы и массивы не нужны.</p></div>
+      <ol class="setup-steps">
+        <li><strong>Создай словарь «Снимок здоровья»</strong><span>Добавь поля ${fields}. Значения возьми действиями «Найти образцы здоровья» и «Получить сведения об образцах» за сегодня; сон — за прошедшую ночь.</span></li>
+        <li><strong>Добавь token в тот же словарь</strong><span>Скопируй значение ниже. Поле date передай как текущую дату в формате ГГГГ-ММ-ДД.</span></li>
+        <li><strong>Отправь словарь</strong><span>«Получить содержимое URL» → POST → JSON. В качестве тела передай сам словарь, без массива и без повтора.</span></li>
+        <li><strong>Автоматизируй</strong><span>Создай два запуска по времени: ${escapeHTML(config.morning_trigger)} и ${escapeHTML(config.evening_trigger)}. Для обоих выбери «Немедленно» и отключи вопрос перед запуском.</span></li>
+      </ol>
+      <details class="fallback-import"><summary>URL и секрет команды</summary>
+        <label class="field compact-field"><span>URL</span><div class="copy-row"><input id="health-shortcut-endpoint" readonly value="${escapeHTML(config.endpoint)}"><button class="secondary-button" type="button" data-copy-input="health-shortcut-endpoint">Копировать</button></div></label>
+        <label class="field compact-field"><span>Значение поля token</span><div class="copy-row"><input id="health-shortcut-token" type="password" readonly value="${escapeHTML(config.token)}"><button class="secondary-button" type="button" data-copy-input="health-shortcut-token">Копировать</button></div></label>
+        <p class="secret-warning">Не отправляй токен в чат и не добавляй его в ссылку.</p>
+      </details>`;
+  }
+
   function resourceStatusHTML(entry) {
     if (entry.error) {
       const message = entry.error.status === 401
@@ -285,7 +406,7 @@
       button.classList.toggle("active", active);
       button.setAttribute("aria-current", active ? "page" : "false");
     });
-    els.add.classList.toggle("hidden", state.view === "profile");
+    els.add.classList.toggle("hidden", ["health", "profile"].includes(state.view));
     els.refresh.classList.toggle("spinning", entry.loading);
     els.loading.classList.add("hidden");
     els.error.classList.add("hidden");
@@ -297,6 +418,14 @@
       } else {
         state.timezone = entry.data.timezone;
         els.view.innerHTML = renderProfile(entry.data);
+      }
+    } else if (state.view === "health") {
+      els.date.textContent = "Сон · движение · тренировки";
+      if (entry.data === null) {
+        els.view.innerHTML = resourceStatusHTML(entry);
+      } else {
+        state.timezone = entry.data.timezone;
+        els.view.innerHTML = renderHealth(entry.data);
       }
     } else {
       if (entry.data === null) {
@@ -357,6 +486,64 @@
     document.querySelector("#profile-form")?.addEventListener("submit", saveProfile);
     document.querySelector("#hse-form")?.addEventListener("submit", importHSE);
     document.querySelector("#hse-setup-button")?.addEventListener("click", showShortcutSetup);
+    document.querySelector("#health-setup-button")?.addEventListener("click", showHealthShortcutSetup);
+    document.querySelector("#health-goals-form")?.addEventListener("submit", saveHealthGoals);
+    document.querySelectorAll("[data-intake-field]").forEach((button) => button.addEventListener("click", updateIntake));
+  }
+
+  async function showHealthShortcutSetup(event) {
+    const button = event.currentTarget;
+    const target = document.querySelector("#health-shortcut-setup");
+    button.disabled = true;
+    button.textContent = "Загружаю…";
+    try {
+      if (!state.healthShortcutConfig) {
+        state.healthShortcutConfig = await api("api/v1/health/shortcut-config");
+      }
+      target.innerHTML = healthShortcutSetupHTML(state.healthShortcutConfig);
+      target.classList.remove("hidden");
+      button.classList.add("hidden");
+      target.querySelectorAll("[data-copy-input]").forEach((copyButton) => {
+        copyButton.addEventListener("click", () => copyInput(copyButton.dataset.copyInput));
+      });
+    } catch (error) {
+      toast(error.message);
+      button.disabled = false;
+      button.textContent = "Подключить Apple Health";
+    }
+  }
+
+  async function updateIntake(event) {
+    const button = event.currentTarget;
+    button.disabled = true;
+    try {
+      const payload = { [button.dataset.intakeField]: Number(button.dataset.intakeDelta) };
+      const health = await api("api/v1/health/intake", { method: "POST", body: JSON.stringify(payload) });
+      resources.set("health", health);
+      tg?.HapticFeedback?.selectionChanged();
+    } catch (error) {
+      toast(error.message);
+      button.disabled = false;
+    }
+  }
+
+  async function saveHealthGoals(event) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const button = form.querySelector("button[type=submit]");
+    const data = new FormData(form);
+    button.disabled = true;
+    try {
+      const health = await api("api/v1/health/goals", { method: "PATCH", body: JSON.stringify({
+        water_ml: Number(data.get("water_ml")),
+        protein_g: Number(data.get("protein_g")),
+      }) });
+      resources.set("health", health);
+      toast("Цели сохранены");
+    } catch (error) {
+      toast(error.message);
+      button.disabled = false;
+    }
   }
 
   async function showShortcutSetup(event) {
@@ -389,7 +576,7 @@
       input.type = "text";
       input.select();
       document.execCommand("copy");
-      input.type = id === "shortcut-token" ? "password" : "text";
+      input.type = id.endsWith("shortcut-token") ? "password" : "text";
     }
     tg?.HapticFeedback?.selectionChanged();
     toast("Скопировано");

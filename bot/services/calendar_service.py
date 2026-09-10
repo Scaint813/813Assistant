@@ -111,7 +111,8 @@ class CalendarService:
         free = self._free_intervals(plan_start, window_end, events + workouts, tz)
         calendar_free_minutes = self._interval_minutes(free)
         capacity_minutes = min(
-            calendar_free_minutes, planning["daily_focus_minutes"]
+            calendar_free_minutes,
+            planning.get("auto_planning_minutes", planning["daily_focus_minutes"]),
         )
         focus_remaining = capacity_minutes
 
@@ -180,8 +181,17 @@ class CalendarService:
             timeboxes.append(box)
             if is_large:
                 daily_minutes = min(
-                    planning["daily_focus_minutes"],
-                    max(60, capacity_minutes or planning["daily_focus_minutes"]),
+                    planning.get(
+                        "auto_planning_minutes", planning["daily_focus_minutes"]
+                    ),
+                    max(
+                        60,
+                        capacity_minutes
+                        or planning.get(
+                            "auto_planning_minutes",
+                            planning["daily_focus_minutes"],
+                        ),
+                    ),
                 )
                 oversized.append({
                     **box,
