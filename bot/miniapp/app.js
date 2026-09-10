@@ -184,7 +184,13 @@
       if (!groups.has(key)) groups.set(key, []);
       groups.get(key).push(item);
     });
-    if (!groups.size) return '<div class="empty-state">На выбранный период событий пока нет.</div>';
+    if (!groups.size) {
+      const nextHSE = data.upcoming?.next_hse_event;
+      const nextHint = nextHSE
+        ? `<span>Ближайшее событие HSE — ${formatDate(nextHSE.start, { weekday: "long", day: "numeric", month: "long" })}, ${formatTime(nextHSE.start)}.</span>`
+        : "";
+      return `<div class="empty-state"><strong>На выбранный период событий нет.</strong>${nextHint}</div>`;
+    }
     return [...groups.entries()].map(([key, items]) => `<section class="day-group">
       <div class="day-heading"><time datetime="${key}">${formatDate(items[0].start, { weekday: "long", day: "numeric", month: "long" })}</time><span>${items.length}</span></div>
       ${timelineHTML(items)}
@@ -227,6 +233,9 @@
     const bridgeStatus = profile.hse.iphone_bridge
       ? "В планнер попадает только календарь HSE; личные события остаются на iPhone."
       : "Серверный приёмник календаря пока выключен.";
+    const nextHSE = profile.hse.first_start
+      ? `Ближайшее — ${formatDate(profile.hse.first_start, { weekday: "long", day: "numeric", month: "long" })}, ${formatTime(profile.hse.first_start)}`
+      : "В загруженном диапазоне будущих занятий нет.";
     const focusWarning = profile.planning.focus_warning
       ? `<div class="notice ${profile.planning.focus_load_level === "overload" ? "danger" : ""}"><strong>Высокая нагрузка.</strong> ${escapeHTML(profile.planning.focus_warning)}</div>`
       : "";
@@ -240,7 +249,7 @@
         ${focusWarning}
         <button class="primary-button full-width" type="submit">Сохранить профиль</button>
       </form></section>
-      <section class="profile-panel"><div class="panel-heading"><h2>Синхронизация календаря HSE</h2><p>${profile.hse.events} ${plural(profile.hse.events, "событие", "события", "событий")} в ближайшем расписании</p></div>
+      <section class="profile-panel"><div class="panel-heading"><h2>Синхронизация календаря HSE</h2><p>${profile.hse.events} ${plural(profile.hse.events, "событие", "события", "событий")} в загруженном расписании · ${escapeHTML(nextHSE)}</p></div>
         <div class="profile-fields">
           <div class="sync-state-card ${syncStatus}"><span class="sync-state-dot" aria-hidden="true"></span><div><strong>${escapeHTML(syncLabel)}</strong><span>${escapeHTML(syncDetail)}</span></div></div>
           <div class="source-flow"><span>HSE App</span><b>→</b><span>Календарь HSE</span><b>→</b><span>Планнер</span></div>
@@ -465,7 +474,7 @@
     document.querySelectorAll("[data-period]").forEach((button) => button.addEventListener("click", () => {
       state.period = button.dataset.period;
       render();
-      loadCurrentInBackground();
+      loadCurrentInBackground(true);
     }));
     document.querySelector("[data-retry-current]")?.addEventListener(
       "click",
@@ -617,9 +626,12 @@
   document.querySelectorAll(".nav-item").forEach((button) => button.addEventListener("click", () => {
     state.view = button.dataset.view;
     render();
-    loadCurrentInBackground();
+    loadCurrentInBackground(true);
     window.scrollTo({ top: 0, behavior: "smooth" });
   }));
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") loadCurrentInBackground(true);
+  });
   els.refresh.addEventListener("click", () => loadCurrentInBackground(true));
   els.retry.addEventListener("click", () => loadCurrentInBackground(true));
   els.add.addEventListener("click", () => { els.form.reset(); document.querySelector("#task-duration").value = 30; els.dialog.showModal(); setTimeout(() => document.querySelector("#task-title").focus(), 80); });

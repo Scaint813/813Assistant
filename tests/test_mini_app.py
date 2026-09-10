@@ -178,6 +178,47 @@ class MiniAppAPITests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([], payload["timeline"])
         self.assertEqual(0, payload["stats"]["events"])
 
+    async def test_empty_period_explains_the_next_hse_event(self):
+        async with self.sessions() as session:
+            session.add(CalendarEvent(
+                user_id=42,
+                external_id="hse-ios:future-class",
+                calendar_name="HSE",
+                title="Будущая лекция",
+                start_at=datetime(
+                    2026, 9, 23, 16, 20,
+                    tzinfo=ZoneInfo("Europe/Moscow"),
+                ),
+                end_at=datetime(
+                    2026, 9, 23, 17, 40,
+                    tzinfo=ZoneInfo("Europe/Moscow"),
+                ),
+                source="hse_ios",
+            ))
+            await session.commit()
+
+        response = await self.client.get(
+            "/api/v1/state?period=today",
+            headers=self.headers,
+        )
+        payload = await response.json()
+
+        self.assertEqual(200, response.status)
+        self.assertEqual([], payload["timeline"])
+        next_event = payload["upcoming"]["next_hse_event"]
+        self.assertEqual("Будущая лекция", next_event["title"])
+        self.assertTrue(next_event["start"].startswith("2026-09-23T16:20:00"))
+
+        profile_response = await self.client.get(
+            "/api/v1/profile",
+            headers=self.headers,
+        )
+        profile = await profile_response.json()
+        self.assertEqual(1, profile["hse"]["events"])
+        self.assertTrue(
+            profile["hse"]["first_start"].startswith("2026-09-23T16:20:00")
+        )
+
     async def test_api_requires_telegram_authorization(self):
         response = await self.client.get("/api/v1/state")
 
@@ -406,6 +447,8 @@ class MiniAppAPITests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(1, result["events"])
         self.assertEqual(1, result["ignored"])
         self.assertTrue(result["changed"])
+        self.assertTrue(result["first_start"].startswith("2026-09-09T13:00:00"))
+        self.assertTrue(result["last_end"].startswith("2026-09-09T14:20:00"))
         async with self.sessions() as session:
             events = list(
                 (await session.execute(select(CalendarEvent))).scalars().all()

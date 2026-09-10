@@ -430,6 +430,16 @@ class MiniAppServer:
             })
         timeline.sort(key=lambda item: item["start"])
 
+        next_hse_event = None
+        if not timeline:
+            next_hse_event = await session.scalar(
+                select(CalendarEvent).where(
+                    CalendarEvent.user_id == user_id,
+                    CalendarEvent.source.in_(("hse_ical", "hse_ios")),
+                    CalendarEvent.end_at > now,
+                ).order_by(CalendarEvent.start_at.asc()).limit(1)
+            )
+
         serialized_tasks = [self._task_payload(item, now) for item in tasks]
         overdue_count = sum(
             1 for item in active_tasks
@@ -457,6 +467,12 @@ class MiniAppServer:
             "tasks": serialized_tasks,
             "focus": [self._task_payload(item, now) for item in active_tasks[:5]],
             "conflicts": [self._conflict_payload(item, now.tzinfo) for item in conflicts],
+            "upcoming": {
+                "next_hse_event": (
+                    self._event_payload(next_hse_event, now.tzinfo)
+                    if next_hse_event else None
+                ),
+            },
         }
 
     async def _create_task(self, request: web.Request) -> web.Response:
@@ -578,6 +594,14 @@ class MiniAppServer:
                     and user_id == self.calendar_bridge_owner_id
                 ),
                 "calendar_name": "HSE",
+                "first_start": (
+                    hse_status["first_start"].isoformat()
+                    if hse_status["first_start"] else None
+                ),
+                "last_end": (
+                    hse_status["last_end"].isoformat()
+                    if hse_status["last_end"] else None
+                ),
             },
         })
 
@@ -1259,6 +1283,14 @@ class MiniAppServer:
             "ignored": ignored,
             "changed": changed,
             "synced_at": sync_now.isoformat(),
+            "first_start": (
+                min(item["start"] for item in normalized_events)
+                if normalized_events else None
+            ),
+            "last_end": (
+                max(item["end"] for item in normalized_events)
+                if normalized_events else None
+            ),
         })
 
     @staticmethod

@@ -58,6 +58,8 @@ async function run() {
   };
   global.location = { search: "" };
   global.document = {
+    visibilityState: "visible",
+    addEventListener() {},
     querySelector(selector) {
       if (selector.startsWith("#")) return elements[selector.slice(1)] || null;
       return null;
@@ -101,6 +103,8 @@ async function run() {
         sync_status: "never",
         last_result: null,
         iphone_bridge: false,
+        first_start: null,
+        last_end: null,
       },
     }),
   });
@@ -154,12 +158,24 @@ async function run() {
       tasks: [],
       focus: [],
       conflicts: [],
+      upcoming: {
+        next_hse_event: {
+          title: "Будущая лекция",
+          start: "2026-09-23T16:20:00+03:00",
+          end: "2026-09-23T17:40:00+03:00",
+        },
+      },
     }),
   });
   await flush();
   navItems.find((item) => item.dataset.view === "today").listeners.click();
   assert.equal(elements["page-title"].textContent, "Сегодня");
   assert.match(elements.view.innerHTML, /Здесь свободно/);
+
+  navItems.find((item) => item.dataset.view === "planner").listeners.click();
+  assert.equal(elements["page-title"].textContent, "Планнер");
+  assert.match(elements.view.innerHTML, /Ближайшее событие HSE/);
+  assert.match(elements.view.innerHTML, /Будущая лекция|23 сентября/);
 
   console.log("Mini App independent navigation checks passed.");
 }
