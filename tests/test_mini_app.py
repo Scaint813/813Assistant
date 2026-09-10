@@ -5,7 +5,7 @@ import hmac
 import json
 import time as time_module
 import unittest
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, time
 from urllib.parse import urlencode
 from zoneinfo import ZoneInfo
 
