@@ -327,6 +327,24 @@ class CalendarEvent(Base, TimestampMixin):
     synced_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
 
+class CalendarSyncState(Base, TimestampMixin):
+    """Durable status for an external calendar snapshot, including empty ones."""
+
+    __tablename__ = "calendar_sync_state"
+    __table_args__ = (
+        UniqueConstraint("user_id", "source", name="uq_calendar_sync_state_user_source"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(Integer, index=True)
+    source: Mapped[str] = mapped_column(String(32), index=True)
+    fingerprint: Mapped[str] = mapped_column(String(64), default="")
+    event_count: Mapped[int] = mapped_column(Integer, default=0)
+    last_result: Mapped[str] = mapped_column(String(16), default="updated")
+    last_success_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, index=True
+    )
+
+
 class TaskPlanBlock(Base, TimestampMixin):
     """A bounded work block; the parent task keeps the full effort estimate."""
 

@@ -10,7 +10,7 @@ import httpx
 from icalendar import Calendar
 from sqlalchemy import func, select
 
-from bot.database.models import CalendarEvent
+from bot.database.models import CalendarEvent, CalendarSyncState
 from bot.services.datetime_utils import ensure_aware
 
 logger = logging.getLogger(__name__)
@@ -225,12 +225,26 @@ class HSECalendarService:
             )
         )
         count, synced_at, first_start, last_end = result.one()
+        sync_state = await session.scalar(
+            select(CalendarSyncState).where(
+                CalendarSyncState.user_id == (user_id or self.user_id),
+                CalendarSyncState.source == "hse_ios",
+            )
+        )
+        synced_at = ensure_aware(synced_at, now.tzinfo)
+        state_synced_at = ensure_aware(
+            sync_state.last_success_at if sync_state else None,
+            now.tzinfo,
+        )
+        if state_synced_at and (not synced_at or state_synced_at > synced_at):
+            synced_at = state_synced_at
         return {
             "configured": self.is_configured,
             "events": int(count or 0),
-            "synced_at": ensure_aware(synced_at, now.tzinfo),
+            "synced_at": synced_at,
             "first_start": ensure_aware(first_start, now.tzinfo),
             "last_end": ensure_aware(last_end, now.tzinfo),
+            "last_result": sync_state.last_result if sync_state else None,
         }
 
     @staticmethod

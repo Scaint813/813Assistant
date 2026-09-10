@@ -90,11 +90,18 @@ async function run() {
       timezone_options: [{ timezone: "Europe/Moscow", label: "Москва", offset: "+03:00" }],
       home: "",
       planning: { daily_focus_minutes: 180 },
-      hse: { events: 0, synced_at: null, iphone_bridge: false },
+      hse: {
+        events: 0,
+        synced_at: null,
+        sync_status: "never",
+        last_result: null,
+        iphone_bridge: false,
+      },
     }),
   });
   await flush();
-  assert.match(elements.view.innerHTML, /Календарь HSE с iPhone/);
+  assert.match(elements.view.innerHTML, /Синхронизация календаря HSE/);
+  assert.match(elements.view.innerHTML, /Ещё не запускалась/);
 
   requests.get("api/v1/state?period=today").resolve({
     ok: true,

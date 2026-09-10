@@ -206,10 +206,18 @@
 
   function renderProfile(profile) {
     const options = profile.timezone_options.map((item) => `<option value="${escapeHTML(item.timezone)}" ${item.timezone === profile.timezone ? "selected" : ""}>${escapeHTML(item.label)} · ${escapeHTML(item.offset)}</option>`).join("");
-    const sync = profile.hse.synced_at ? `Последнее обновление: ${formatDate(profile.hse.synced_at, { day: "numeric", month: "short" })}, ${formatTime(profile.hse.synced_at)}` : "Файл ещё не загружен";
+    const syncStatus = profile.hse.sync_status || (profile.hse.synced_at ? "fresh" : "never");
+    const syncLabel = syncStatus === "fresh"
+      ? "Автоматизация работает"
+      : syncStatus === "stale"
+        ? "Давно не обновлялось"
+        : "Ещё не запускалась";
+    const syncDetail = profile.hse.synced_at
+      ? `${profile.hse.last_result === "unchanged" ? "Проверено без изменений" : "Обновлено"}: ${formatDate(profile.hse.synced_at, { day: "numeric", month: "short" })}, ${formatTime(profile.hse.synced_at)}`
+      : "После первого фонового запуска здесь появится время проверки.";
     const bridgeStatus = profile.hse.iphone_bridge
-      ? "Можно подключить автоматическое обновление с iPhone"
-      : "Синхронизация с iPhone ещё не настроена";
+      ? "В планнер попадает только календарь HSE; личные события остаются на iPhone."
+      : "Серверный приёмник календаря пока выключен.";
     return `<section class="profile-panel"><div class="panel-heading"><h2>${escapeHTML(profile.name)}</h2><p>Время и дорога учитываются в расписании.</p></div>
       <form class="profile-fields" id="profile-form">
         <label class="field"><span>Город и часовой пояс</span><select name="timezone">${options}</select></label>
@@ -217,11 +225,12 @@
         <label class="field"><span>Фокус в день, минут</span><input name="daily_focus_minutes" type="number" min="60" max="480" step="15" value="${profile.planning.daily_focus_minutes}"></label>
         <button class="primary-button full-width" type="submit">Сохранить профиль</button>
       </form></section>
-      <section class="profile-panel"><div class="panel-heading"><h2>Календарь HSE с iPhone</h2><p>${profile.hse.events} ${plural(profile.hse.events, "событие", "события", "событий")} · ${escapeHTML(sync)}</p></div>
+      <section class="profile-panel"><div class="panel-heading"><h2>Синхронизация календаря HSE</h2><p>${profile.hse.events} ${plural(profile.hse.events, "событие", "события", "событий")} в ближайшем расписании</p></div>
         <div class="profile-fields">
+          <div class="sync-state-card ${syncStatus}"><span class="sync-state-dot" aria-hidden="true"></span><div><strong>${escapeHTML(syncLabel)}</strong><span>${escapeHTML(syncDetail)}</span></div></div>
           <div class="source-flow"><span>HSE App</span><b>→</b><span>Календарь HSE</span><b>→</b><span>Планнер</span></div>
-          <p class="helper">${escapeHTML(bridgeStatus)}. Личные календари не отправляются.</p>
-          ${profile.hse.iphone_bridge ? '<button class="primary-button full-width" id="hse-setup-button" type="button">Настроить автоматизацию</button>' : '<div class="notice">Серверный приёмник календаря пока выключен.</div>'}
+          <p class="helper">${escapeHTML(bridgeStatus)}</p>
+          ${profile.hse.iphone_bridge ? `<button class="primary-button full-width" id="hse-setup-button" type="button">${syncStatus === "fresh" ? "Управление автоматизацией" : "Настроить автоматизацию"}</button>` : '<div class="notice">Серверный приёмник календаря пока выключен.</div>'}
           <div id="hse-shortcut-setup" class="shortcut-setup hidden"></div>
           <details class="fallback-import">
             <summary>Если есть файл .ics</summary>
@@ -235,17 +244,18 @@
   }
 
   function shortcutSetupHTML(config) {
-    return `<div class="setup-heading"><h3>Автоматизация после HSE App</h3><p class="helper">Создаётся один раз в приложении «Команды».</p></div>
+    return `<div class="setup-heading"><h3>Полностью фоновая работа</h3><p class="helper">Команда уже готова. Осталось один раз настроить два запуска в приложении «Команды».</p></div>
       <ol class="setup-steps">
-        <li><strong>Автоматизация → Приложение</strong><span>Выбери HSE App, условие «Закрыто», запуск немедленно.</span></li>
-        <li><strong>Найти события календаря</strong><span>Календарь — ${escapeHTML(config.calendar)}, даты — ближайшие ${config.window_days} дней.</span></li>
-        <li><strong>Повторить для каждого события</strong><span>Собери словарь с полями id, title, calendar, location и notes; даты start и end отформатируй как ISO 8601.</span></li>
-        <li><strong>Добавить в переменную Events</strong><span>Размести сразу после словаря, внутри повтора. Так все словари сохранятся в одном списке.</span></li>
-        <li><strong>Получить содержимое URL</strong><span>После «Конец повтора»: POST, тело JSON. token — секрет ниже; events — переменная Events с типом «Массив». Заголовки не нужны.</span></li>
+        <li><strong>Убери отладочный просмотр</strong><span>Удали действия «Показать» или «Быстрый просмотр» после запроса. «Получить содержимое URL» должно быть последним действием команды.</span></li>
+        <li><strong>Запуск после HSE App</strong><span>Автоматизация → Приложение → HSE App → «Закрыто» → запустить эту команду → «Немедленно». Отключи уведомление о запуске.</span></li>
+        <li><strong>Ежедневная страховка в ${escapeHTML(config.daily_trigger || "07:00")}</strong><span>Автоматизация → Время суток → запустить эту же команду → «Немедленно». Она повторно проверит ближайшие ${config.window_days} дней.</span></li>
+        <li><strong>Готово</strong><span>Одинаковое расписание больше не перезаписывается. В профиле обновится время проверки, а изменения сразу попадут в «Сегодня» и «Планнер».</span></li>
       </ol>
-      <label class="field compact-field"><span>URL</span><div class="copy-row"><input id="shortcut-endpoint" readonly value="${escapeHTML(config.endpoint)}"><button class="secondary-button" type="button" data-copy-input="shortcut-endpoint">Копировать</button></div></label>
-      <label class="field compact-field"><span>Значение поля token</span><div class="copy-row"><input id="shortcut-token" type="password" readonly value="${escapeHTML(config.token)}"><button class="secondary-button" type="button" data-copy-input="shortcut-token">Копировать</button></div></label>
-      <p class="secret-warning">Токен даёт доступ только к загрузке календаря HSE. Не отправляй его в чат, заголовок или ссылку.</p>`;
+      <details class="fallback-import"><summary>Данные команды для восстановления</summary>
+        <label class="field compact-field"><span>URL</span><div class="copy-row"><input id="shortcut-endpoint" readonly value="${escapeHTML(config.endpoint)}"><button class="secondary-button" type="button" data-copy-input="shortcut-endpoint">Копировать</button></div></label>
+        <label class="field compact-field"><span>Значение поля token</span><div class="copy-row"><input id="shortcut-token" type="password" readonly value="${escapeHTML(config.token)}"><button class="secondary-button" type="button" data-copy-input="shortcut-token">Копировать</button></div></label>
+        <p class="secret-warning">Токен даёт доступ только к загрузке календаря HSE. Не отправляй его в чат или ссылку.</p>
+      </details>`;
   }
 
   function resourceStatusHTML(entry) {

@@ -307,6 +307,29 @@ h3 { margin-bottom: 3px; font-size: 16px; line-height: 1.3; }
 .file-input input { padding: 9px; }
 .helper { margin: -4px 0 12px; color: var(--muted); font-size: 12px; line-height: 1.45; }
 
+.sync-state-card {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  margin: 14px 0 4px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg);
+}
+.sync-state-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--muted);
+}
+.sync-state-card strong, .sync-state-card div span { display: block; }
+.sync-state-card strong { font-size: 13px; }
+.sync-state-card div span { margin-top: 3px; color: var(--muted); font-size: 11px; line-height: 1.4; }
+.sync-state-card.fresh .sync-state-dot { background: var(--success); box-shadow: 0 0 0 4px color-mix(in srgb, var(--success) 15%, transparent); }
+.sync-state-card.stale .sync-state-dot { background: var(--warning); box-shadow: 0 0 0 4px color-mix(in srgb, var(--warning) 15%, transparent); }
+
 .source-flow {
   display: flex;
   align-items: center;

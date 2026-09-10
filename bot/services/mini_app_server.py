@@ -16,6 +16,7 @@ from sqlalchemy import select
 
 from bot.database.models import (
     CalendarEvent,
+    CalendarSyncState,
     Reminder,
     Task,
     TaskPlanBlock,
@@ -250,7 +251,7 @@ class MiniAppServer:
             raise web.HTTPNotFound()
         response = web.FileResponse(self.static_dir / name)
         self._secure_static_headers(response)
-        response.headers["Cache-Control"] = "public, max-age=300"
+        response.headers["Cache-Control"] = "public, max-age=60, must-revalidate"
         return response
 
     @staticmethod
@@ -490,6 +491,18 @@ class MiniAppServer:
             hse_status = await self.hse_calendar_service.status(
                 session, now, user_id=user_id
             )
+            hse_synced_at = hse_status["synced_at"]
+            hse_sync_age_minutes = (
+                max(0, int((now - hse_synced_at).total_seconds() // 60))
+                if hse_synced_at
+                else None
+            )
+            if hse_sync_age_minutes is None:
+                hse_sync_status = "never"
+            elif hse_sync_age_minutes <= 36 * 60:
+                hse_sync_status = "fresh"
+            else:
+                hse_sync_status = "stale"
             prefs = self.preferences_service.get_all(profile)
             try:
                 context = json.loads(profile.preferences_json or "{}")
@@ -508,9 +521,12 @@ class MiniAppServer:
             "hse": {
                 "events": hse_status["events"],
                 "synced_at": (
-                    hse_status["synced_at"].isoformat()
-                    if hse_status["synced_at"] else None
+                    hse_synced_at.isoformat()
+                    if hse_synced_at else None
                 ),
+                "sync_status": hse_sync_status,
+                "sync_age_minutes": hse_sync_age_minutes,
+                "last_result": hse_status["last_result"],
                 "periodic_sync": hse_status["configured"],
                 "iphone_bridge": bool(
                     self.calendar_bridge_token
@@ -576,6 +592,9 @@ class MiniAppServer:
             "authorization": f"Bearer {self.calendar_bridge_token}",
             "token": self.calendar_bridge_token,
             "trigger": "HSE App is closed",
+            "daily_trigger": "07:00",
+            "run_immediately": True,
+            "silent": True,
             "window_days": 14,
         })
 
@@ -751,28 +770,63 @@ class MiniAppServer:
             raise web.HTTPBadRequest(
                 reason=f"no valid HSE events: {diagnostic}"
             )
+        normalized_events.sort(
+            key=lambda item: (item["id"], item["start"], item["end"])
+        )
+        fingerprint = hashlib.sha256(
+            json.dumps(
+                normalized_events,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            ).encode()
+        ).hexdigest()
+        sync_now = self.time_service.now()
         async with self.session_factory() as session:
-            saved = await self.calendar_service.replace_events(
-                session,
-                request["user_id"],
-                {
-                    "source": "hse_ios",
-                    "replace_all": True,
-                    "events": normalized_events,
-                },
+            sync_state = await session.scalar(
+                select(CalendarSyncState).where(
+                    CalendarSyncState.user_id == request["user_id"],
+                    CalendarSyncState.source == "hse_ios",
+                )
             )
+            changed = not sync_state or sync_state.fingerprint != fingerprint
+            if changed:
+                saved = await self.calendar_service.replace_events(
+                    session,
+                    request["user_id"],
+                    {
+                        "source": "hse_ios",
+                        "replace_all": True,
+                        "events": normalized_events,
+                    },
+                )
+            else:
+                saved = sync_state.event_count
+            if sync_state is None:
+                sync_state = CalendarSyncState(
+                    user_id=request["user_id"],
+                    source="hse_ios",
+                )
+                session.add(sync_state)
+            sync_state.fingerprint = fingerprint
+            sync_state.event_count = saved
+            sync_state.last_result = "updated" if changed else "unchanged"
+            sync_state.last_success_at = sync_now
             await session.commit()
         logger.info(
-            "HSE iPhone calendar synchronized: user=%s saved=%s ignored=%s",
+            "HSE iPhone calendar synchronized: user=%s saved=%s ignored=%s changed=%s",
             request["user_id"],
             saved,
             ignored,
+            changed,
         )
         return web.json_response({
             "status": "saved",
             "calendar": "HSE",
             "events": saved,
             "ignored": ignored,
+            "changed": changed,
+            "synced_at": sync_now.isoformat(),
         })
 
     @staticmethod

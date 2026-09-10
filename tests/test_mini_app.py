@@ -233,6 +233,9 @@ class MiniAppAPITests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("HSE", config["calendar"])
         self.assertEqual(f"Bearer {CALENDAR_TOKEN}", config["authorization"])
         self.assertEqual(CALENDAR_TOKEN, config["token"])
+        self.assertEqual("07:00", config["daily_trigger"])
+        self.assertTrue(config["run_immediately"])
+        self.assertTrue(config["silent"])
         forbidden = await self.client.get(
             "/api/v1/hse/shortcut-config",
             headers={"X-Debug-User": "43"},
@@ -372,16 +375,41 @@ class MiniAppAPITests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(200, response.status)
         self.assertEqual(1, result["events"])
         self.assertEqual(1, result["ignored"])
+        self.assertTrue(result["changed"])
         async with self.sessions() as session:
             events = list(
                 (await session.execute(select(CalendarEvent))).scalars().all()
             )
+            first_event_id = events[0].id
         self.assertEqual(1, len(events))
         self.assertEqual("hse_ios", events[0].source)
         self.assertEqual("HSE", events[0].calendar_name)
         self.assertEqual("435", events[0].room)
         self.assertIn("Трехсвятительский", events[0].building)
         self.assertEqual("Солдаткина Оксана Леонидовна", events[0].teacher)
+
+        unchanged = await self.client.post(
+            "/bridge/v1/hse-calendar",
+            headers={"Authorization": f"Bearer {CALENDAR_TOKEN}"},
+            json={"events": [{
+                "id": "ios-event-1",
+                "title": (
+                    "Проектный семинар · Научно-исследовательский "
+                    "семинар · Солдаткина Оксана Леонидовна"
+                ),
+                "start": "2026-09-09T13:00:00+03:00",
+                "end": "2026-09-09T14:20:00+03:00",
+                "calendar": "HSE",
+                "location": "435, Б. Трехсвятительский пер., д. 3",
+                "notes": "24e7c7759ccca9305959285074dd9f20eb3ff",
+            }]},
+        )
+        unchanged_result = await unchanged.json()
+        self.assertEqual(200, unchanged.status)
+        self.assertFalse(unchanged_result["changed"])
+        async with self.sessions() as session:
+            unchanged_event = await session.scalar(select(CalendarEvent))
+        self.assertEqual(first_event_id, unchanged_event.id)
 
         async with self.sessions() as session:
             session.add(CalendarEvent(
@@ -431,3 +459,15 @@ class MiniAppAPITests(unittest.IsolatedAsyncioTestCase):
             )
         self.assertEqual(200, cleared.status)
         self.assertEqual(["shortcut"], [event.source for event in remaining])
+        cleared_result = await cleared.json()
+        self.assertTrue(cleared_result["changed"])
+
+        profile_response = await self.client.get(
+            "/api/v1/profile",
+            headers=self.headers,
+        )
+        profile = await profile_response.json()
+        self.assertEqual(0, profile["hse"]["events"])
+        self.assertEqual("fresh", profile["hse"]["sync_status"])
+        self.assertEqual("updated", profile["hse"]["last_result"])
+        self.assertIsNotNone(profile["hse"]["synced_at"])
