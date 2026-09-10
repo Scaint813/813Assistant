@@ -30,6 +30,7 @@ from bot.handlers import settings as settings_handler
 from bot.middlewares import AccessMiddleware
 from bot.services.action_log_service import ActionLogService
 from bot.services.ai_service import AIService
+from bot.services.assistant_loop_service import AssistantLoopService
 from bot.services.assistant_ux_service import AssistantUXService
 from bot.services.calendar_service import CalendarService
 from bot.services.checkin_service import CheckinService
@@ -127,6 +128,12 @@ async def main() -> None:
     user_profile_service = UserProfileService(cfg.timezone)
     calendar_service = CalendarService(time_service)
     day_planning_service = DayPlanningService(calendar_service)
+    assistant_loop_service = AssistantLoopService(
+        day_planning_service,
+        session_factory,
+        time_service,
+        user_profile_service,
+    )
     route_time_estimator = RouteTimeEstimator(
         cfg.default_transfer_buffer_minutes
     )
@@ -140,6 +147,7 @@ async def main() -> None:
         feed_url=cfg.hse_ical_url,
         enabled=cfg.hse_ical_sync_enabled,
         sync_interval_minutes=cfg.hse_ical_sync_interval_minutes,
+        on_sync=assistant_loop_service.rebuild_user,
     )
     ai_service = AIService(
         cfg.openai_api_key,
@@ -201,6 +209,11 @@ async def main() -> None:
         cfg.checkin_evening_time,
     )
     checkin_service.schedule_daily_checkins(bot, timezone_by_user)
+    auto_plan_jobs = assistant_loop_service.schedule(
+        reminder_scheduler.scheduler,
+        timezone_by_user,
+    )
+    log.info("Automatic morning plan rebuilds: %s", auto_plan_jobs)
     log.info(
         "Check-ins: %s | morning=%s day=%s evening=%s",
         "enabled by default" if cfg.checkin_enabled else "disabled by default (user can enable)",
@@ -296,6 +309,7 @@ async def main() -> None:
                 hse_calendar_service,
                 health_service,
                 training_service,
+                assistant_loop_service,
                 calendar_bridge_token=cfg.calendar_bridge_token,
                 calendar_bridge_owner_id=cfg.allowed_user_id,
                 calendar_bridge_public_url=(
@@ -346,6 +360,7 @@ async def main() -> None:
     dp["focus_service"] = focus_service
     dp["calendar_service"] = calendar_service
     dp["day_planning_service"] = day_planning_service
+    dp["assistant_loop_service"] = assistant_loop_service
     dp["conflict_service"] = conflict_service
     dp["daily_brief_service"] = daily_brief_service
     dp["hse_calendar_service"] = hse_calendar_service

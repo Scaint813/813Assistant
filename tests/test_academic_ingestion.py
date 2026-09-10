@@ -72,6 +72,24 @@ class AcademicIngestionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Трехсвятительский", event.building)
         self.assertEqual(15, event.start_at.hour)
 
+    async def test_ical_import_triggers_the_derived_plan_hook(self):
+        calls = []
+
+        async def on_sync(user_id, reason):
+            calls.append((user_id, reason))
+
+        service = HSECalendarService(
+            self.calendar,
+            self.sessions,
+            self.clock,
+            user_id=1,
+            on_sync=on_sync,
+        )
+
+        await service.import_bytes(ICS)
+
+        self.assertEqual([(1, "calendar_import")], calls)
+
     def test_feed_url_is_restricted_to_hse_https(self):
         self.assertEqual(
             "https://ruz.hse.ru/feed/private.ics",

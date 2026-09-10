@@ -339,7 +339,24 @@ class CalendarSyncState(Base, TimestampMixin):
     source: Mapped[str] = mapped_column(String(32), index=True)
     fingerprint: Mapped[str] = mapped_column(String(64), default="")
     event_count: Mapped[int] = mapped_column(Integer, default=0)
+    received_count: Mapped[int] = mapped_column(Integer, default=0)
+    window_days: Mapped[int] = mapped_column(Integer, default=14)
     last_result: Mapped[str] = mapped_column(String(16), default="updated")
+    integrity_status: Mapped[str] = mapped_column(String(16), default="unknown")
+    integrity_reason: Mapped[str] = mapped_column(String(64), default="")
+    consecutive_failures: Mapped[int] = mapped_column(Integer, default=0)
+    last_attempt_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    last_complete_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    first_start_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_end_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     last_success_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, index=True
     )

@@ -61,6 +61,27 @@ _MIGRATIONS: list[tuple[str, str, str]] = [
     ("calendar_events", "teacher", "TEXT NOT NULL DEFAULT ''"),
     ("calendar_events", "building", "TEXT NOT NULL DEFAULT ''"),
     ("calendar_events", "room", "TEXT NOT NULL DEFAULT ''"),
+    ("calendar_sync_state", "received_count", "INTEGER NOT NULL DEFAULT 0"),
+    ("calendar_sync_state", "window_days", "INTEGER NOT NULL DEFAULT 14"),
+    (
+        "calendar_sync_state",
+        "integrity_status",
+        "TEXT NOT NULL DEFAULT 'unknown'",
+    ),
+    (
+        "calendar_sync_state",
+        "integrity_reason",
+        "TEXT NOT NULL DEFAULT ''",
+    ),
+    (
+        "calendar_sync_state",
+        "consecutive_failures",
+        "INTEGER NOT NULL DEFAULT 0",
+    ),
+    ("calendar_sync_state", "last_attempt_at", "DATETIME"),
+    ("calendar_sync_state", "last_complete_at", "DATETIME"),
+    ("calendar_sync_state", "first_start_at", "DATETIME"),
+    ("calendar_sync_state", "last_end_at", "DATETIME"),
 ]
 
 

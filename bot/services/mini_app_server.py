@@ -12,7 +12,7 @@ from typing import ClassVar
 from urllib.parse import parse_qsl
 
 from aiohttp import web
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from bot.database.models import (
     CalendarEvent,
@@ -112,6 +112,7 @@ class MiniAppServer:
         hse_calendar_service,
         health_service=None,
         training_service=None,
+        assistant_loop_service=None,
         *,
         calendar_bridge_token: str = "",
         calendar_bridge_owner_id: int | None = None,
@@ -132,6 +133,7 @@ class MiniAppServer:
         self.hse_calendar_service = hse_calendar_service
         self.health_service = health_service
         self.training_service = training_service
+        self.assistant_loop_service = assistant_loop_service
         default_owner_id = self.allowed_user_ids[0] if self.allowed_user_ids else 0
         self.calendar_bridge_owner_id = int(
             calendar_bridge_owner_id or default_owner_id
@@ -389,6 +391,25 @@ class MiniAppServer:
         conflicts = await self.conflict_service.detect_between(
             session, user_id, start, end
         )
+        hse_status = await self.hse_calendar_service.status(
+            session,
+            now,
+            user_id=user_id,
+        )
+        health_snapshot = await session.scalar(
+            select(HealthSnapshot)
+            .where(HealthSnapshot.user_id == user_id)
+            .order_by(
+                HealthSnapshot.date.desc(),
+                HealthSnapshot.captured_at.desc(),
+            )
+            .limit(1)
+        )
+        if not hse_status["has_complete_snapshot"]:
+            events = [
+                item for item in events
+                if item.source not in {"hse_ical", "hse_ios"}
+            ]
 
         timeline = []
         for event in events:
@@ -431,7 +452,7 @@ class MiniAppServer:
         timeline.sort(key=lambda item: item["start"])
 
         next_hse_event = None
-        if not timeline:
+        if not timeline and hse_status["has_complete_snapshot"]:
             next_hse_event = await session.scalar(
                 select(CalendarEvent).where(
                     CalendarEvent.user_id == user_id,
@@ -448,6 +469,62 @@ class MiniAppServer:
         hse_count = sum(
             1 for item in events if item.source in {"hse_ical", "hse_ios"}
         )
+        current_item = next(
+            (
+                item for item in timeline
+                if item.get("end")
+                and self.calendar_service._parse_datetime(item["start"]) <= now
+                < self.calendar_service._parse_datetime(item["end"])
+            ),
+            None,
+        )
+        future_items = [
+            item for item in timeline
+            if self.calendar_service._parse_datetime(item["start"]) >= now
+        ]
+        next_item = future_items[0] if future_items else None
+        if current_item is None and active_tasks:
+            current_item = {
+                "key": f"task:{active_tasks[0].id}",
+                "kind": "task",
+                "title": active_tasks[0].title,
+                "start": None,
+                "end": None,
+                "meta": "Главный приоритет",
+                "location": "",
+                "task_id": active_tasks[0].id,
+            }
+        if next_item is None and next_hse_event is not None:
+            next_item = self._event_payload(next_hse_event, now.tzinfo)
+
+        planning = self.preferences_service.planning(profile)
+        snapshot_payload = self._health_snapshot_payload(health_snapshot, now)
+        recovery = self._recovery_payload(snapshot_payload, planning, now)
+        risks = []
+        if hse_status["integrity_status"] == "incomplete":
+            risks.append({
+                "level": "warning",
+                "title": "Расписание HSE неполное",
+                "text": hse_status["integrity_message"],
+            })
+        if conflicts:
+            risks.append({
+                "level": "danger",
+                "title": f"Конфликтов в расписании: {len(conflicts)}",
+                "text": "События пересекаются или между ними не хватает времени на дорогу.",
+            })
+        if overdue_count:
+            risks.append({
+                "level": "warning",
+                "title": f"Просроченных задач: {overdue_count}",
+                "text": "Их нужно перенести, завершить или вернуть в план.",
+            })
+        if recovery["level"] in {"watch", "overload"}:
+            risks.append({
+                "level": "warning" if recovery["level"] == "watch" else "danger",
+                "title": recovery["title"],
+                "text": recovery["message"],
+            })
         return {
             "period": period,
             "now": now.isoformat(),
@@ -473,6 +550,41 @@ class MiniAppServer:
                     if next_hse_event else None
                 ),
             },
+            "sources": {
+                "hse": {
+                    "status": hse_status["integrity_status"],
+                    "message": hse_status["integrity_message"],
+                    "events": hse_status["events"],
+                    "received_count": hse_status["received_count"],
+                    "synced_at": (
+                        hse_status["synced_at"].isoformat()
+                        if hse_status["synced_at"] else None
+                    ),
+                    "checked_at": (
+                        hse_status["last_attempt_at"].isoformat()
+                        if hse_status["last_attempt_at"] else None
+                    ),
+                },
+            },
+            "assistant": {
+                "now": current_item,
+                "next": next_item,
+                "risks": risks,
+                "resource": {
+                    "connected": snapshot_payload is not None,
+                    "level": recovery["level"],
+                    "title": recovery["title"],
+                    "text": recovery["message"],
+                    "sleep_minutes": (
+                        snapshot_payload.get("sleep_minutes", 0)
+                        if snapshot_payload else 0
+                    ),
+                    "steps": (
+                        snapshot_payload.get("steps", 0)
+                        if snapshot_payload else 0
+                    ),
+                },
+            },
         }
 
     async def _create_task(self, request: web.Request) -> web.Response:
@@ -497,6 +609,8 @@ class MiniAppServer:
                 planning_state="ready" if deadline or duration_confirmed else "inbox",
             )
             session.add(task)
+            await session.flush()
+            await self._rebuild_plan(session, user_id, now, reason="task_created")
             await session.commit()
             response = self._task_payload(task, now)
         return web.json_response(response, status=201)
@@ -538,6 +652,7 @@ class MiniAppServer:
                     payload["estimated_minutes"], 5, 10_080
                 )
                 task.duration_confirmed = True
+            await self._rebuild_plan(session, user_id, now, reason="task_updated")
             await session.commit()
             response = self._task_payload(task, now)
         return web.json_response(response)
@@ -555,7 +670,9 @@ class MiniAppServer:
                 if hse_synced_at
                 else None
             )
-            if hse_sync_age_minutes is None:
+            if hse_status["integrity_status"] == "incomplete":
+                hse_sync_status = "incomplete"
+            elif hse_sync_age_minutes is None:
                 hse_sync_status = "never"
             elif hse_sync_age_minutes <= 36 * 60:
                 hse_sync_status = "fresh"
@@ -588,6 +705,20 @@ class MiniAppServer:
                 "sync_status": hse_sync_status,
                 "sync_age_minutes": hse_sync_age_minutes,
                 "last_result": hse_status["last_result"],
+                "received_count": hse_status["received_count"],
+                "window_days": hse_status["window_days"],
+                "integrity_status": hse_status["integrity_status"],
+                "integrity_reason": hse_status["integrity_reason"],
+                "integrity_message": hse_status["integrity_message"],
+                "last_attempt_at": (
+                    hse_status["last_attempt_at"].isoformat()
+                    if hse_status["last_attempt_at"] else None
+                ),
+                "last_complete_at": (
+                    hse_status["last_complete_at"].isoformat()
+                    if hse_status["last_complete_at"] else None
+                ),
+                "consecutive_failures": hse_status["consecutive_failures"],
                 "periodic_sync": hse_status["configured"],
                 "iphone_bridge": bool(
                     self.calendar_bridge_token
@@ -636,6 +767,10 @@ class MiniAppServer:
                     else ""
                 )
                 profile.preferences_json = json.dumps(context, ensure_ascii=False)
+            now = self.time_service.in_timezone(
+                self.user_profile_service.valid_timezone(profile.timezone)
+            ).now()
+            await self._rebuild_plan(session, user_id, now, reason="profile_updated")
             await session.commit()
         return await self._profile(request)
 
@@ -1229,6 +1364,17 @@ class MiniAppServer:
         normalized_events.sort(
             key=lambda item: (item["id"], item["start"], item["end"])
         )
+        window_days = self.hse_calendar_service.DEFAULT_WINDOW_DAYS
+        if isinstance(payload, dict):
+            try:
+                window_days = max(1, min(31, int(payload.get("window_days", window_days))))
+            except (TypeError, ValueError):
+                window_days = self.hse_calendar_service.DEFAULT_WINDOW_DAYS
+        explicit_complete = bool(
+            isinstance(payload, dict)
+            and str(payload.get("snapshot_complete", "")).casefold()
+            in {"1", "true", "yes"}
+        )
         fingerprint = hashlib.sha256(
             json.dumps(
                 normalized_events,
@@ -1239,14 +1385,61 @@ class MiniAppServer:
         ).hexdigest()
         sync_now = self.time_service.now()
         async with self.session_factory() as session:
+            existing_result = await session.execute(
+                select(
+                    func.count(CalendarEvent.id),
+                    func.min(CalendarEvent.start_at),
+                    func.max(CalendarEvent.end_at),
+                ).where(
+                    CalendarEvent.user_id == request["user_id"],
+                    CalendarEvent.source == "hse_ios",
+                    CalendarEvent.end_at >= sync_now,
+                )
+            )
+            existing_count, _existing_first, _existing_last = existing_result.one()
+            first_start = min(
+                (self.calendar_service._parse_datetime(item["start"]) for item in normalized_events),
+                default=None,
+            )
+            last_end = max(
+                (self.calendar_service._parse_datetime(item["end"]) for item in normalized_events),
+                default=None,
+            )
+            assessment = self.hse_calendar_service.assess_snapshot(
+                event_count=len(normalized_events),
+                first_start=first_start,
+                now=sync_now,
+                existing_count=int(existing_count or 0),
+                explicit_complete=explicit_complete,
+            )
             sync_state = await session.scalar(
                 select(CalendarSyncState).where(
                     CalendarSyncState.user_id == request["user_id"],
                     CalendarSyncState.source == "hse_ios",
                 )
             )
-            changed = not sync_state or sync_state.fingerprint != fingerprint
-            if changed:
+            has_known_complete = bool(
+                int(existing_count or 0) >= 2
+                or (
+                    sync_state
+                    and (
+                        sync_state.last_complete_at is not None
+                        or (
+                            sync_state.integrity_status != "incomplete"
+                            and sync_state.last_result in {"updated", "unchanged"}
+                        )
+                    )
+                )
+            )
+            if (
+                sync_state
+                and has_known_complete
+                and sync_state.last_complete_at is None
+            ):
+                sync_state.last_complete_at = sync_state.last_success_at
+            working_changed = False
+            candidate_changed = not sync_state or sync_state.fingerprint != fingerprint
+            if assessment.complete and candidate_changed:
                 saved = await self.calendar_service.replace_events(
                     session,
                     request["user_id"],
@@ -1256,40 +1449,90 @@ class MiniAppServer:
                         "events": normalized_events,
                     },
                 )
+                working_changed = True
+            elif assessment.complete:
+                saved = sync_state.event_count if sync_state else int(existing_count or 0)
+            elif not has_known_complete:
+                # Quarantine a partial first/legacy snapshot: it is visible in
+                # diagnostics, but must not masquerade as a usable schedule.
+                if existing_count:
+                    await self.calendar_service.replace_events(
+                        session,
+                        request["user_id"],
+                        {
+                            "source": "hse_ios",
+                            "replace_all": True,
+                            "events": [],
+                        },
+                    )
+                    working_changed = True
+                saved = 0
             else:
-                saved = sync_state.event_count
+                saved = int(existing_count or 0)
             if sync_state is None:
                 sync_state = CalendarSyncState(
                     user_id=request["user_id"],
                     source="hse_ios",
                 )
                 session.add(sync_state)
-            sync_state.fingerprint = fingerprint
+            if assessment.complete:
+                sync_state.fingerprint = fingerprint
             sync_state.event_count = saved
-            sync_state.last_result = "updated" if changed else "unchanged"
-            sync_state.last_success_at = sync_now
+            sync_state.received_count = len(normalized_events)
+            sync_state.window_days = window_days
+            sync_state.integrity_status = assessment.status
+            sync_state.integrity_reason = assessment.reason
+            sync_state.last_attempt_at = sync_now
+            sync_state.first_start_at = first_start
+            sync_state.last_end_at = last_end
+            if assessment.complete:
+                sync_state.last_result = "updated" if working_changed else "unchanged"
+                sync_state.last_success_at = sync_now
+                sync_state.last_complete_at = sync_now
+                sync_state.consecutive_failures = 0
+                plan = await self._rebuild_plan(
+                    session,
+                    request["user_id"],
+                    sync_now,
+                    reason="calendar_synced",
+                )
+            else:
+                sync_state.last_result = "incomplete"
+                sync_state.consecutive_failures = int(
+                    sync_state.consecutive_failures or 0
+                ) + 1
+                plan = {"saved": 0, "unallocated": 0, "skipped": True}
             await session.commit()
         logger.info(
-            "HSE iPhone calendar synchronized: user=%s saved=%s ignored=%s changed=%s",
+            "HSE iPhone calendar synchronized: user=%s saved=%s received=%s "
+            "ignored=%s changed=%s integrity=%s",
             request["user_id"],
             saved,
+            len(normalized_events),
             ignored,
-            changed,
+            working_changed,
+            assessment.status,
         )
         return web.json_response({
-            "status": "saved",
+            "status": "saved" if assessment.complete else "incomplete",
             "calendar": "HSE",
             "events": saved,
+            "received": len(normalized_events),
             "ignored": ignored,
-            "changed": changed,
+            "changed": working_changed,
+            "integrity": assessment.status,
+            "message": self.hse_calendar_service.integrity_message(
+                assessment.status,
+                assessment.reason,
+                received_count=len(normalized_events),
+            ),
+            "plan": plan,
             "synced_at": sync_now.isoformat(),
             "first_start": (
-                min(item["start"] for item in normalized_events)
-                if normalized_events else None
+                first_start.isoformat() if first_start else None
             ),
             "last_end": (
-                max(item["end"] for item in normalized_events)
-                if normalized_events else None
+                last_end.isoformat() if last_end else None
             ),
         })
 
@@ -1397,6 +1640,23 @@ class MiniAppServer:
             self.user_profile_service.valid_timezone(profile.timezone)
         )
         return clock.now(), profile
+
+    async def _rebuild_plan(self, session, user_id: int, now, *, reason: str) -> dict:
+        if self.assistant_loop_service is None:
+            return {"saved": 0, "unallocated": 0, "skipped": True}
+        try:
+            return await self.assistant_loop_service.rebuild_in_session(
+                session,
+                user_id,
+                now,
+            )
+        except Exception:
+            logger.exception(
+                "Automatic plan rebuild failed: user=%s reason=%s",
+                user_id,
+                reason,
+            )
+            return {"saved": 0, "unallocated": 0, "failed": True}
 
     @staticmethod
     async def _json_object(request: web.Request) -> dict:

@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from bot.database.models import (
     Base,
     CalendarEvent,
+    CalendarSyncState,
     DailyWellnessLog,
     HealthSnapshot,
     TrainingProfile,
@@ -180,21 +181,32 @@ class MiniAppAPITests(unittest.IsolatedAsyncioTestCase):
 
     async def test_empty_period_explains_the_next_hse_event(self):
         async with self.sessions() as session:
-            session.add(CalendarEvent(
-                user_id=42,
-                external_id="hse-ios:future-class",
-                calendar_name="HSE",
-                title="Будущая лекция",
-                start_at=datetime(
-                    2026, 9, 23, 16, 20,
-                    tzinfo=ZoneInfo("Europe/Moscow"),
+            session.add_all([
+                CalendarEvent(
+                    user_id=42,
+                    external_id="hse-ios:future-class",
+                    calendar_name="HSE",
+                    title="Будущая лекция",
+                    start_at=datetime(
+                        2026, 9, 23, 16, 20,
+                        tzinfo=ZoneInfo("Europe/Moscow"),
+                    ),
+                    end_at=datetime(
+                        2026, 9, 23, 17, 40,
+                        tzinfo=ZoneInfo("Europe/Moscow"),
+                    ),
+                    source="hse_ios",
                 ),
-                end_at=datetime(
-                    2026, 9, 23, 17, 40,
-                    tzinfo=ZoneInfo("Europe/Moscow"),
+                CalendarSyncState(
+                    user_id=42,
+                    source="hse_ios",
+                    event_count=1,
+                    received_count=1,
+                    last_result="updated",
+                    integrity_status="complete",
+                    last_complete_at=self.clock.now(),
                 ),
-                source="hse_ios",
-            ))
+            ])
             await session.commit()
 
         response = await self.client.get(
@@ -524,7 +536,7 @@ class MiniAppAPITests(unittest.IsolatedAsyncioTestCase):
         cleared = await self.client.post(
             "/bridge/v1/hse-calendar",
             headers={"Authorization": f"Bearer {CALENDAR_TOKEN}"},
-            json={"events": []},
+            json={"events": [], "snapshot_complete": True},
         )
         async with self.sessions() as session:
             remaining = list(
@@ -544,6 +556,115 @@ class MiniAppAPITests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("fresh", profile["hse"]["sync_status"])
         self.assertEqual("updated", profile["hse"]["last_result"])
         self.assertIsNotNone(profile["hse"]["synced_at"])
+
+    async def test_hse_bridge_preserves_known_schedule_when_snapshot_is_suspicious(self):
+        full_events = [
+            {
+                "id": f"known-{index}",
+                "title": f"Занятие {index}",
+                "start": f"2026-09-{10 + index:02d}T10:00:00+03:00",
+                "end": f"2026-09-{10 + index:02d}T11:20:00+03:00",
+                "calendar": "HSE",
+            }
+            for index in range(4)
+        ]
+        complete = await self.client.post(
+            "/bridge/v1/hse-calendar",
+            headers={"Authorization": f"Bearer {CALENDAR_TOKEN}"},
+            json={"events": full_events},
+        )
+        complete_payload = await complete.json()
+        self.assertEqual(200, complete.status)
+        self.assertEqual("saved", complete_payload["status"])
+        self.assertEqual(4, complete_payload["events"])
+
+        suspicious = await self.client.post(
+            "/bridge/v1/hse-calendar",
+            headers={"Authorization": f"Bearer {CALENDAR_TOKEN}"},
+            json={
+                "events": [{
+                    "id": "distant-only",
+                    "title": "Единственное далёкое занятие",
+                    "start": "2026-09-23T16:20:00+03:00",
+                    "end": "2026-09-23T17:40:00+03:00",
+                    "calendar": "HSE",
+                }],
+                "window_days": 14,
+            },
+        )
+        suspicious_payload = await suspicious.json()
+
+        self.assertEqual(200, suspicious.status)
+        self.assertEqual("incomplete", suspicious_payload["status"])
+        self.assertEqual("incomplete", suspicious_payload["integrity"])
+        self.assertEqual(4, suspicious_payload["events"])
+        self.assertEqual(1, suspicious_payload["received"])
+        self.assertFalse(suspicious_payload["changed"])
+        async with self.sessions() as session:
+            events = list(
+                (await session.execute(
+                    select(CalendarEvent).where(CalendarEvent.source == "hse_ios")
+                )).scalars().all()
+            )
+            sync_state = await session.scalar(select(CalendarSyncState))
+        self.assertEqual(4, len(events))
+        self.assertNotIn("distant-only", {event.external_id for event in events})
+        self.assertEqual("only_one_distant_event", sync_state.integrity_reason)
+        self.assertEqual(1, sync_state.consecutive_failures)
+
+        profile = await (
+            await self.client.get("/api/v1/profile", headers=self.headers)
+        ).json()
+        self.assertEqual("incomplete", profile["hse"]["sync_status"])
+        self.assertEqual(4, profile["hse"]["events"])
+        self.assertEqual(1, profile["hse"]["received_count"])
+
+        state = await (
+            await self.client.get(
+                "/api/v1/state?period=today", headers=self.headers
+            )
+        ).json()
+        self.assertEqual("incomplete", state["sources"]["hse"]["status"])
+        self.assertTrue(any(
+            risk["title"] == "Расписание HSE неполное"
+            for risk in state["assistant"]["risks"]
+        ))
+
+    async def test_hse_bridge_quarantines_a_first_distant_single_event(self):
+        response = await self.client.post(
+            "/bridge/v1/hse-calendar",
+            headers={"Authorization": f"Bearer {CALENDAR_TOKEN}"},
+            json={
+                "events": [{
+                    "id": "distant-only",
+                    "title": "Подозрительно одинокое занятие",
+                    "start": "2026-09-23T16:20:00+03:00",
+                    "end": "2026-09-23T17:40:00+03:00",
+                    "calendar": "HSE",
+                }],
+                "window_days": 14,
+            },
+        )
+        payload = await response.json()
+
+        self.assertEqual(200, response.status)
+        self.assertEqual("incomplete", payload["status"])
+        self.assertEqual(0, payload["events"])
+        self.assertEqual(1, payload["received"])
+        async with self.sessions() as session:
+            stored = list(
+                (await session.execute(select(CalendarEvent))).scalars().all()
+            )
+        self.assertEqual([], stored)
+
+        planner = await (
+            await self.client.get(
+                "/api/v1/state?period=week", headers=self.headers
+            )
+        ).json()
+        self.assertEqual([], planner["timeline"])
+        self.assertIsNone(planner["upcoming"]["next_hse_event"])
+        self.assertEqual("incomplete", planner["sources"]["hse"]["status"])
 
     async def test_empty_health_is_ready_and_intake_is_independent(self):
         empty_response = await self.client.get(

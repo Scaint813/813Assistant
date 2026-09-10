@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from bot.database.models import (
     Base,
+    CalendarSyncState,
     PendingPreview,
     Project,
     Reminder,
@@ -380,6 +381,13 @@ class ConversationalUXTests(unittest.IsolatedAsyncioTestCase):
                 user_id=1, text="Врач",
                 remind_at=self.clock.now() + timedelta(hours=2),
             ))
+            session.add(CalendarSyncState(
+                user_id=1,
+                source="hse_ios",
+                integrity_status="incomplete",
+                integrity_reason="only_one_distant_event",
+                consecutive_failures=2,
+            ))
             await session.commit()
 
         with tempfile.TemporaryDirectory() as directory:
@@ -397,6 +405,7 @@ class ConversationalUXTests(unittest.IsolatedAsyncioTestCase):
             await service.run_check(bot)
             backup = await service.create_backup(bot)
             self.assertIn("напоминание #1 не запланировано", issues)
+            self.assertTrue(any("календарь HSE" in issue for issue in issues))
             self.assertEqual(1, len(bot.messages))
             self.assertIn("Служебное уведомление 813Assistant", bot.messages[0][1])
             self.assertIn("Что произошло:", bot.messages[0][1])

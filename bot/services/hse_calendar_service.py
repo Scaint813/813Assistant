@@ -24,11 +24,23 @@ class HSESyncResult:
     source: str = "hse_ical"
 
 
+@dataclass(frozen=True, slots=True)
+class HSESnapshotAssessment:
+    status: str
+    reason: str = ""
+
+    @property
+    def complete(self) -> bool:
+        return self.status == "complete"
+
+
 class HSECalendarService:
     """Parse HSE iCalendar exports into the shared calendar event model."""
 
     SOURCE = "hse_ical"
     MAX_ICAL_BYTES = 5 * 1024 * 1024
+    DEFAULT_WINDOW_DAYS = 14
+    DISTANT_SINGLE_EVENT_DAYS = 7
 
     def __init__(
         self,
@@ -40,6 +52,7 @@ class HSECalendarService:
         feed_url: str = "",
         enabled: bool = False,
         sync_interval_minutes: int = 60,
+        on_sync=None,
     ):
         self.calendar_service = calendar_service
         self.session_factory = session_factory
@@ -48,6 +61,7 @@ class HSECalendarService:
         self.feed_url = feed_url.strip()
         self.enabled = enabled
         self.sync_interval_minutes = max(15, int(sync_interval_minutes))
+        self.on_sync = on_sync
 
     @property
     def is_configured(self) -> bool:
@@ -117,11 +131,20 @@ class HSECalendarService:
         self, content: bytes | str, *, user_id: int | None = None
     ) -> HSESyncResult:
         payload = self.parse_ical(content)
+        target_user_id = user_id or self.user_id
         async with self.session_factory() as session:
             imported = await self.calendar_service.replace_events(
-                session, user_id or self.user_id, payload
+                session, target_user_id, payload
             )
             await session.commit()
+        if self.on_sync is not None:
+            try:
+                await self.on_sync(target_user_id, "calendar_import")
+            except Exception:
+                logger.exception(
+                    "Automatic plan rebuild after HSE import failed: user=%s",
+                    target_user_id,
+                )
         starts = [datetime.fromisoformat(item["start"]) for item in payload["events"]]
         ends = [datetime.fromisoformat(item["end"]) for item in payload["events"]]
         return HSESyncResult(
@@ -225,6 +248,13 @@ class HSECalendarService:
             )
         )
         count, synced_at, first_start, last_end = result.one()
+        ical_count = await session.scalar(
+            select(func.count(CalendarEvent.id)).where(
+                CalendarEvent.user_id == (user_id or self.user_id),
+                CalendarEvent.source == self.SOURCE,
+                CalendarEvent.end_at >= now,
+            )
+        )
         sync_state = await session.scalar(
             select(CalendarSyncState).where(
                 CalendarSyncState.user_id == (user_id or self.user_id),
@@ -232,20 +262,140 @@ class HSECalendarService:
             )
         )
         synced_at = ensure_aware(synced_at, now.tzinfo)
-        state_synced_at = ensure_aware(
-            sync_state.last_success_at if sync_state else None,
-            now.tzinfo,
-        )
+        state_success = None
+        if sync_state:
+            state_success = sync_state.last_complete_at
+            if state_success is None and sync_state.last_result != "incomplete":
+                state_success = sync_state.last_success_at
+        state_synced_at = ensure_aware(state_success, now.tzinfo)
         if state_synced_at and (not synced_at or state_synced_at > synced_at):
             synced_at = state_synced_at
+        last_attempt_at = ensure_aware(
+            sync_state.last_attempt_at if sync_state else None,
+            now.tzinfo,
+        )
+        if last_attempt_at and (not synced_at or last_attempt_at > synced_at):
+            synced_at = last_attempt_at
+        integrity_status = (
+            sync_state.integrity_status if sync_state else "unknown"
+        )
+        integrity_reason = (
+            sync_state.integrity_reason if sync_state else ""
+        )
+        if int(ical_count or 0) > 0:
+            integrity_status = "complete"
+            integrity_reason = ""
+        elif integrity_status in {"", "unknown"}:
+            assessment = self.assess_snapshot(
+                event_count=int(count or 0),
+                first_start=ensure_aware(first_start, now.tzinfo),
+                now=now,
+                existing_count=0,
+            )
+            integrity_status = assessment.status
+            integrity_reason = assessment.reason
+        has_complete_snapshot = bool(
+            (sync_state and sync_state.last_complete_at)
+            or (
+                sync_state
+                and integrity_status == "complete"
+                and sync_state.last_result != "incomplete"
+            )
+            or (sync_state is None and integrity_status == "complete")
+            or int(ical_count or 0) > 0
+        )
+        usable_count = int(count or 0) if has_complete_snapshot else 0
         return {
             "configured": self.is_configured,
-            "events": int(count or 0),
+            "events": usable_count,
+            "stored_events": int(count or 0),
             "synced_at": synced_at,
             "first_start": ensure_aware(first_start, now.tzinfo),
             "last_end": ensure_aware(last_end, now.tzinfo),
             "last_result": sync_state.last_result if sync_state else None,
+            "received_count": (
+                sync_state.received_count if sync_state else int(count or 0)
+            ),
+            "window_days": (
+                sync_state.window_days
+                if sync_state else self.DEFAULT_WINDOW_DAYS
+            ),
+            "integrity_status": integrity_status,
+            "integrity_reason": integrity_reason,
+            "integrity_message": self.integrity_message(
+                integrity_status,
+                integrity_reason,
+                received_count=(
+                    sync_state.received_count if sync_state else int(count or 0)
+                ),
+            ),
+            "last_attempt_at": last_attempt_at,
+            "last_complete_at": ensure_aware(
+                sync_state.last_complete_at if sync_state else None,
+                now.tzinfo,
+            ),
+            "consecutive_failures": (
+                sync_state.consecutive_failures if sync_state else 0
+            ),
+            "has_complete_snapshot": has_complete_snapshot,
         }
+
+    @classmethod
+    def assess_snapshot(
+        cls,
+        *,
+        event_count: int,
+        first_start: datetime | None,
+        now: datetime,
+        existing_count: int = 0,
+        explicit_complete: bool = False,
+    ) -> HSESnapshotAssessment:
+        """Classify a device snapshot before it can replace known-good data."""
+        if explicit_complete:
+            return HSESnapshotAssessment("complete")
+        if event_count == 0:
+            if existing_count > 0:
+                return HSESnapshotAssessment(
+                    "incomplete", "empty_while_future_events_exist"
+                )
+            return HSESnapshotAssessment("complete")
+        if (
+            event_count == 1
+            and first_start is not None
+            and first_start > now + timedelta(days=cls.DISTANT_SINGLE_EVENT_DAYS)
+        ):
+            return HSESnapshotAssessment(
+                "incomplete", "only_one_distant_event"
+            )
+        if existing_count >= 4 and event_count * 2 < existing_count:
+            return HSESnapshotAssessment("incomplete", "snapshot_shrank")
+        return HSESnapshotAssessment("complete")
+
+    @staticmethod
+    def integrity_message(
+        status: str,
+        reason: str,
+        *,
+        received_count: int,
+    ) -> str:
+        if status != "incomplete":
+            return ""
+        if reason == "only_one_distant_event":
+            return (
+                f"Получено только {received_count} событие, а ближайшее находится "
+                "дальше чем через неделю. Расписание может быть неполным."
+            )
+        if reason == "empty_while_future_events_exist":
+            return (
+                "Телефон прислал пустой снимок, хотя в рабочем календаре ещё есть "
+                "будущие занятия. Последние известные данные сохранены."
+            )
+        if reason == "snapshot_shrank":
+            return (
+                "Новый снимок заметно меньше предыдущего. Последнее полноценное "
+                "расписание сохранено до следующей проверки."
+            )
+        return "Источник прислал неполный снимок расписания."
 
     @staticmethod
     def _clean_text(value) -> str:

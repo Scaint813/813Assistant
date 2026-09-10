@@ -109,7 +109,7 @@ async function run() {
     }),
   });
   await flush();
-  assert.match(elements.view.innerHTML, /Синхронизация календаря HSE/);
+  assert.match(elements.view.innerHTML, /Подключения · календарь HSE/);
   assert.match(elements.view.innerHTML, /Ещё не запускалась/);
 
   navItems.find((item) => item.dataset.view === "health").listeners.click();
@@ -165,6 +165,26 @@ async function run() {
           end: "2026-09-23T17:40:00+03:00",
         },
       },
+      sources: {
+        hse: {
+          status: "incomplete",
+          message: "Телефон прислал неполный снимок.",
+        },
+      },
+      assistant: {
+        now: null,
+        next: null,
+        risks: [{
+          level: "warning",
+          title: "Расписание HSE неполное",
+          text: "Телефон прислал неполный снимок.",
+        }],
+        resource: {
+          connected: false,
+          level: "unknown",
+          title: "Нет данных о восстановлении",
+        },
+      },
     }),
   });
   await flush();
@@ -174,7 +194,8 @@ async function run() {
 
   navItems.find((item) => item.dataset.view === "planner").listeners.click();
   assert.equal(elements["page-title"].textContent, "Планнер");
-  assert.match(elements.view.innerHTML, /Ближайшее событие HSE/);
+  assert.match(elements.view.innerHTML, /Из неполного снимка известно событие/);
+  assert.match(elements.view.innerHTML, /Расписание HSE неполное/);
   assert.match(elements.view.innerHTML, /Будущая лекция|23 сентября/);
 
   console.log("Mini App independent navigation checks passed.");

@@ -9,7 +9,7 @@ from pathlib import Path
 
 from sqlalchemy import select, text
 
-from bot.database.models import Reminder, ReminderDelivery
+from bot.database.models import CalendarSyncState, Reminder, ReminderDelivery
 from bot.services.datetime_utils import ensure_aware
 
 logger = logging.getLogger(__name__)
@@ -148,6 +148,19 @@ class ReliabilityService:
                         issues.append(
                             f"доставка {delivery.occurrence_key} требует ручной проверки"
                         )
+                calendar_result = await session.execute(
+                    select(CalendarSyncState).where(
+                        CalendarSyncState.user_id.in_(self.allowed_user_ids),
+                        CalendarSyncState.integrity_status == "incomplete",
+                        CalendarSyncState.consecutive_failures >= 2,
+                    )
+                )
+                for state in calendar_result.scalars().all():
+                    issues.append(
+                        "календарь HSE прислал неполное расписание "
+                        f"{state.consecutive_failures} раза подряд; открой Профиль → "
+                        "Подключения"
+                    )
         except Exception as exc:
             logger.exception("Reliability DB check failed")
             issues.append(f"база данных недоступна: {type(exc).__name__}")

@@ -20,6 +20,7 @@ from bot.database.models import (
 )
 from bot.middlewares import AccessMiddleware
 from bot.services.ai_service import AIService
+from bot.services.assistant_loop_service import AssistantLoopService
 from bot.services.calendar_service import CalendarService
 from bot.services.day_planning_service import DayPlanningService
 from bot.services.intent_parser import IntentParser
@@ -225,6 +226,55 @@ class ProfileAndPlanningTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(480, plan["planning"]["auto_planning_minutes"])
         self.assertEqual("overload", plan["planning"]["focus_load_level"])
         self.assertLessEqual(plan["capacity_minutes"], 480)
+
+    async def test_assistant_loop_rebuilds_today_and_registers_daily_jobs(self):
+        loop_clock = TimeService(
+            self.tz, time(9), time(14), time(19), time(22)
+        )
+        loop_clock.now = lambda: datetime(
+            2026, 8, 3, 9, 0, tzinfo=self.tz
+        )
+        calendar = CalendarService(loop_clock)
+        profile_service = UserProfileService(self.tz)
+        service = AssistantLoopService(
+            DayPlanningService(calendar),
+            self.sessions,
+            loop_clock,
+            profile_service,
+        )
+        async with self.sessions() as session:
+            session.add(UserProfile(user_id=1, timezone="Europe/Moscow"))
+            session.add(Task(
+                user_id=1,
+                title="Подготовить отчёт",
+                planning_state="ready",
+                estimated_minutes=60,
+                duration_confirmed=True,
+            ))
+            await session.commit()
+
+        result = await service.rebuild_user(1, reason="test")
+        async with self.sessions() as session:
+            task = await session.scalar(select(Task).where(Task.user_id == 1))
+
+        self.assertEqual(0, result["unallocated"])
+        self.assertIsNotNone(task.scheduled_start)
+        self.assertIsNotNone(task.scheduled_end)
+
+        scheduler = RecordingScheduler()
+        count = service.schedule(
+            scheduler,
+            {1: "Europe/Moscow", 2: "Asia/Almaty"},
+        )
+        self.assertEqual(2, count)
+        self.assertEqual(
+            {"assistant:daily-plan:1", "assistant:daily-plan:2"},
+            {job[1]["id"] for job in scheduler.jobs},
+        )
+        self.assertEqual(
+            {"Europe/Moscow", "Asia/Almaty"},
+            {job[1]["timezone"] for job in scheduler.jobs},
+        )
 
 
 if __name__ == "__main__":

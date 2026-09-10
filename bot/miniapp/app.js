@@ -161,17 +161,38 @@
     </li>`).join("")}</ul>`;
   }
 
+  function commandItemHTML(label, item, emptyText) {
+    if (!item) {
+      return `<article class="command-card"><span>${escapeHTML(label)}</span><strong>${escapeHTML(emptyText)}</strong><p>Можно оставить время свободным или добавить важную задачу.</p></article>`;
+    }
+    const when = item.start ? formatTime(item.start) : "";
+    const meta = [when, item.meta, item.location].filter(Boolean).join(" · ");
+    return `<article class="command-card ${escapeHTML(item.kind || "")}"><span>${escapeHTML(label)}</span><strong>${escapeHTML(item.title)}</strong>${meta ? `<p>${escapeHTML(meta)}</p>` : ""}</article>`;
+  }
+
   function renderToday(data) {
     const stats = data.stats;
+    const assistant = data.assistant || {};
     const nextItems = data.timeline.filter((item) => parseDate(item.end || item.start) >= parseDate(data.now));
-    const conflictNotice = data.conflicts.length ? `<div class="notice danger"><strong>${data.conflicts.length} ${plural(data.conflicts.length, "конфликт", "конфликта", "конфликтов")}</strong> в расписании. Проверь соседние события в планнере.</div>` : "";
-    return `${conflictNotice}
+    const risks = (assistant.risks || []).map((risk) => `<article class="risk-row ${escapeHTML(risk.level || "warning")}"><div><strong>${escapeHTML(risk.title)}</strong><p>${escapeHTML(risk.text)}</p></div></article>`).join("");
+    const resource = assistant.resource || {};
+    const resourceFacts = resource.connected
+      ? [resource.sleep_minutes ? sleepValue(Number(resource.sleep_minutes)) : "сон — нет данных", resource.steps ? `${Number(resource.steps).toLocaleString("ru-RU")} шагов` : "шаги — нет данных"].join(" · ")
+      : "Подключение здоровья не блокирует остальные функции";
+    return `<section class="command-center">
+        <div class="command-grid">
+          ${commandItemHTML("Сейчас", assistant.now, "Срочных действий нет")}
+          ${commandItemHTML("Дальше", assistant.next, "Расписание свободно")}
+        </div>
+        <article class="resource-row ${escapeHTML(resource.level || "unknown")}"><span>Ресурс</span><div><strong>${escapeHTML(resource.title || "Нет данных о восстановлении")}</strong><p>${escapeHTML(resourceFacts)}</p></div></article>
+      </section>
+      ${risks ? `<section class="section"><div class="section-heading"><h2>Риски</h2><span>${assistant.risks.length}</span></div><div class="risk-list">${risks}</div></section>` : ""}
       <div class="summary-strip" aria-label="Сводка дня">
         <div class="metric"><strong>${stats.events}</strong><span>${plural(stats.events, "событие", "события", "событий")}</span></div>
         <div class="metric"><strong>${stats.active_tasks}</strong><span>${plural(stats.active_tasks, "задача", "задачи", "задач")}</span></div>
         <div class="metric"><strong>${stats.overdue_tasks}</strong><span>просрочено</span></div>
       </div>
-      <section class="section"><div class="section-heading"><h2>Дальше по плану</h2><span>${nextItems.length}</span></div>${timelineHTML(nextItems.slice(0, 8))}</section>
+      <section class="section"><div class="section-heading"><h2>Расписание</h2><span>${nextItems.length}</span></div>${timelineHTML(nextItems.slice(0, 8))}</section>
       <section class="section"><div class="section-heading"><h2>Главное</h2><span>до 5 задач</span></div>
         ${data.focus.length ? data.focus.map((task, index) => `<article class="focus-card"><span class="focus-number">${index + 1}</span><div><h3>${escapeHTML(task.title)}</h3>${taskMeta(task)}</div></article>`).join("") : '<div class="empty-state">Активных задач нет. Добавь одну кнопкой +.</div>'}
       </section>`;
@@ -186,8 +207,9 @@
     });
     if (!groups.size) {
       const nextHSE = data.upcoming?.next_hse_event;
+      const incomplete = data.sources?.hse?.status === "incomplete";
       const nextHint = nextHSE
-        ? `<span>Ближайшее событие HSE — ${formatDate(nextHSE.start, { weekday: "long", day: "numeric", month: "long" })}, ${formatTime(nextHSE.start)}.</span>`
+        ? `<span>${incomplete ? "Из неполного снимка известно событие" : "Ближайшее событие HSE"} — ${formatDate(nextHSE.start, { weekday: "long", day: "numeric", month: "long" })}, ${formatTime(nextHSE.start)}.</span>`
         : "";
       return `<div class="empty-state"><strong>На выбранный период событий нет.</strong>${nextHint}</div>`;
     }
@@ -204,7 +226,11 @@
   }
 
   function renderPlanner(data) {
+    const sourceWarning = data.sources?.hse?.status === "incomplete"
+      ? `<div class="notice danger"><strong>Расписание HSE неполное.</strong> ${escapeHTML(data.sources.hse.message || "Последние известные данные сохранены до следующей проверки.")}</div>`
+      : "";
     return `${periodControlHTML()}
+      ${sourceWarning}
       ${data.conflicts.length ? `<div class="notice danger"><strong>Найдено конфликтов: ${data.conflicts.length}.</strong> События пересекаются или между ними мало времени на дорогу.</div>` : ""}
       ${dayGroupsHTML(data)}`;
   }
@@ -224,10 +250,14 @@
     const syncStatus = profile.hse.sync_status || (profile.hse.synced_at ? "fresh" : "never");
     const syncLabel = syncStatus === "fresh"
       ? "Автоматизация работает"
+      : syncStatus === "incomplete"
+        ? "Источник прислал неполные данные"
       : syncStatus === "stale"
         ? "Давно не обновлялось"
         : "Ещё не запускалась";
-    const syncDetail = profile.hse.synced_at
+    const syncDetail = syncStatus === "incomplete"
+      ? (profile.hse.integrity_message || `Получено событий: ${profile.hse.received_count || profile.hse.events}. Последние известные данные сохранены.`)
+      : profile.hse.synced_at
       ? `${profile.hse.last_result === "unchanged" ? "Проверено без изменений" : "Обновлено"}: ${formatDate(profile.hse.synced_at, { day: "numeric", month: "short" })}, ${formatTime(profile.hse.synced_at)}`
       : "После первого фонового запуска здесь появится время проверки.";
     const bridgeStatus = profile.hse.iphone_bridge
@@ -249,12 +279,12 @@
         ${focusWarning}
         <button class="primary-button full-width" type="submit">Сохранить профиль</button>
       </form></section>
-      <section class="profile-panel"><div class="panel-heading"><h2>Синхронизация календаря HSE</h2><p>${profile.hse.events} ${plural(profile.hse.events, "событие", "события", "событий")} в загруженном расписании · ${escapeHTML(nextHSE)}</p></div>
+      <section class="profile-panel"><div class="panel-heading"><h2>Подключения · календарь HSE</h2><p>${profile.hse.events} ${plural(profile.hse.events, "событие", "события", "событий")} в рабочем расписании · ${escapeHTML(nextHSE)}</p></div>
         <div class="profile-fields">
           <div class="sync-state-card ${syncStatus}"><span class="sync-state-dot" aria-hidden="true"></span><div><strong>${escapeHTML(syncLabel)}</strong><span>${escapeHTML(syncDetail)}</span></div></div>
           <div class="source-flow"><span>HSE App</span><b>→</b><span>Календарь HSE</span><b>→</b><span>Планнер</span></div>
           <p class="helper">${escapeHTML(bridgeStatus)}</p>
-          ${profile.hse.iphone_bridge ? `<button class="primary-button full-width" id="hse-setup-button" type="button">${syncStatus === "fresh" ? "Управление автоматизацией" : "Настроить автоматизацию"}</button>` : '<div class="notice">Серверный приёмник календаря пока выключен.</div>'}
+          ${profile.hse.iphone_bridge ? `<button class="primary-button full-width" id="hse-setup-button" type="button">${syncStatus === "fresh" ? "Управление подключением" : syncStatus === "incomplete" ? "Исправить подключение" : "Настроить подключение"}</button>` : '<div class="notice">Серверный приёмник календаря пока выключен.</div>'}
           <div id="hse-shortcut-setup" class="shortcut-setup hidden"></div>
           <details class="fallback-import">
             <summary>Если есть файл .ics</summary>
