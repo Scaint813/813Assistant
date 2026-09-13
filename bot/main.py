@@ -32,6 +32,7 @@ from bot.services.action_log_service import ActionLogService
 from bot.services.ai_service import AIService
 from bot.services.assistant_loop_service import AssistantLoopService
 from bot.services.assistant_ux_service import AssistantUXService
+from bot.services.automation_coordinator import AutomationCoordinator
 from bot.services.calendar_service import CalendarService
 from bot.services.checkin_service import CheckinService
 from bot.services.cleanup_service import CleanupService
@@ -208,12 +209,19 @@ async def main() -> None:
         cfg.checkin_day_time,
         cfg.checkin_evening_time,
     )
-    checkin_service.schedule_daily_checkins(bot, timezone_by_user)
-    auto_plan_jobs = assistant_loop_service.schedule(
+    automation_coordinator = AutomationCoordinator(
         reminder_scheduler.scheduler,
-        timezone_by_user,
+        bot,
+        checkin_service,
+        assistant_loop_service,
     )
-    log.info("Automatic morning plan rebuilds: %s", auto_plan_jobs)
+    automated_users = automation_coordinator.schedule(timezone_by_user)
+    startup_plans = await automation_coordinator.rebuild_all("startup")
+    log.info(
+        "Assistant autopilot: users=%s startup_plans=%s periodic_reconcile=4h",
+        automated_users,
+        len(startup_plans),
+    )
     log.info(
         "Check-ins: %s | morning=%s day=%s evening=%s",
         "enabled by default" if cfg.checkin_enabled else "disabled by default (user can enable)",
@@ -322,6 +330,7 @@ async def main() -> None:
                 health_bridge_public_url=(
                     mini_app_url + "bridge/v1/health-snapshot"
                 ),
+                profile_updated_callback=automation_coordinator.profile_updated,
             )
             await mini_app_server.start()
             try:
@@ -361,6 +370,7 @@ async def main() -> None:
     dp["calendar_service"] = calendar_service
     dp["day_planning_service"] = day_planning_service
     dp["assistant_loop_service"] = assistant_loop_service
+    dp["automation_coordinator"] = automation_coordinator
     dp["conflict_service"] = conflict_service
     dp["daily_brief_service"] = daily_brief_service
     dp["hse_calendar_service"] = hse_calendar_service

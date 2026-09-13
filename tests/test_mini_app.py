@@ -161,11 +161,12 @@ class MiniAppAPITests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('data-view="planner"', html)
         self.assertIn('data-view="tasks"', html)
         self.assertIn('data-view="health"', html)
-        self.assertIn("assets/resource_store.js", html)
+        self.assertIn('type="module"', html)
+        self.assertIn("assets/app.mjs", html)
         self.assertIn("https://telegram.org/js/telegram-web-app.js", html)
         self.assertIn("frame-ancestors", response.headers["Content-Security-Policy"])
 
-        resource_response = await self.client.get("/assets/resource_store.js")
+        resource_response = await self.client.get("/assets/resource_store.mjs")
         self.assertEqual(200, resource_response.status)
 
     async def test_empty_today_is_a_successful_ready_state(self):
@@ -286,6 +287,12 @@ class MiniAppAPITests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(404, response.status)
 
     async def test_profile_settings_round_trip(self):
+        rescheduled = []
+
+        async def profile_updated(user_id, timezone):
+            rescheduled.append((user_id, timezone))
+
+        self.service.profile_updated_callback = profile_updated
         response = await self.client.patch(
             "/api/v1/profile",
             headers=self.headers,
@@ -304,6 +311,7 @@ class MiniAppAPITests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(480, profile["planning"]["auto_planning_minutes"])
         self.assertEqual("overload", profile["planning"]["focus_load_level"])
         self.assertIn("сон", profile["planning"]["focus_warning"])
+        self.assertEqual([(42, "Asia/Almaty")], rescheduled)
 
     async def test_shortcut_config_is_visible_only_to_owner(self):
         response = await self.client.get(

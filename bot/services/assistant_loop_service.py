@@ -53,19 +53,20 @@ class AssistantLoopService:
         return result
 
     def schedule(self, scheduler, users: dict[int, str]) -> int:
-        scheduled = 0
         for user_id, timezone in users.items():
-            scheduler.add_job(
-                self.rebuild_user,
-                trigger="cron",
-                hour=self.daily_rebuild_time.hour,
-                minute=self.daily_rebuild_time.minute,
-                timezone=timezone,
-                args=[user_id, "morning"],
-                id=f"assistant:daily-plan:{user_id}",
-                replace_existing=True,
-                coalesce=True,
-                max_instances=1,
-            )
-            scheduled += 1
-        return scheduled
+            self.schedule_user(scheduler, user_id, timezone)
+        return len(users)
+
+    def schedule_user(self, scheduler, user_id: int, timezone: str) -> None:
+        scheduler.add_job(
+            self.rebuild_user,
+            trigger="cron",
+            hour=self.daily_rebuild_time.hour,
+            minute=self.daily_rebuild_time.minute,
+            timezone=timezone,
+            args=[int(user_id), "morning"],
+            id=f"assistant:daily-plan:{int(user_id)}",
+            replace_existing=True,
+            coalesce=True,
+            max_instances=1,
+        )

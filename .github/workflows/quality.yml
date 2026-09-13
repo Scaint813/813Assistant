@@ -26,8 +26,12 @@ jobs:
         run: python -m compileall .
       - name: Mini App JavaScript syntax
         run: |
-          node --check bot/miniapp/resource_store.js
-          node --check bot/miniapp/app.js
+          node --check bot/miniapp/api_client.mjs
+          node --check bot/miniapp/app.mjs
+          node --check bot/miniapp/faq.mjs
+          node --check bot/miniapp/formatters.mjs
+          node --check bot/miniapp/resource_store.mjs
+          node --check bot/miniapp/views.mjs
           node tests/test_mini_app_resource_store.js
           node tests/test_mini_app_navigation.js
       - name: Lint

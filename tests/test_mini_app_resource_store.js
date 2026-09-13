@@ -1,7 +1,6 @@
 "use strict";
 
 const assert = require("node:assert/strict");
-const { ResourceStore } = require("../bot/miniapp/resource_store.js");
 
 function deferred() {
   let resolve;
@@ -18,6 +17,7 @@ async function nextMicrotask() {
 }
 
 async function run() {
+  const { ResourceStore } = await import("../bot/miniapp/resource_store.mjs");
   const requests = new Map();
   const loader = (key) => {
     const request = deferred();
