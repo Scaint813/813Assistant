@@ -1,7 +1,6 @@
 "use strict";
 
 const assert = require("node:assert/strict");
-const { ResourceStore } = require("../bot/miniapp/resource_store.js");
 
 function deferred() {
   let resolve;
@@ -44,7 +43,8 @@ async function run() {
   const ids = [
     "view", "loading-screen", "error-screen", "error-message", "page-title",
     "date-label", "refresh-button", "retry-button", "add-task-button",
-    "task-dialog", "task-form", "toast",
+    "help-button", "task-dialog", "task-form", "setup-dialog", "setup-content",
+    "toast", "offline-banner",
   ];
   const elements = Object.fromEntries(ids.map((id) => [id, new FakeElement()]));
   const navItems = ["today", "planner", "tasks", "health", "profile"].map(
@@ -53,10 +53,13 @@ async function run() {
   const requests = new Map();
 
   global.window = {
-    MiniAppResourceStore: ResourceStore,
+    location: { pathname: "/", search: "", hash: "" },
+    history: { pushState() {}, replaceState() {} },
+    sessionStorage: { getItem() { return null; }, setItem() {} },
+    addEventListener() {},
     scrollTo() {},
   };
-  global.location = { search: "" };
+  global.location = global.window.location;
   global.document = {
     visibilityState: "visible",
     addEventListener() {},
@@ -74,7 +77,7 @@ async function run() {
     return request.promise;
   };
 
-  require("../bot/miniapp/app.js");
+  await import("../bot/miniapp/app.mjs");
   await flush();
   assert.ok(requests.has("api/v1/state?period=today"));
 
@@ -109,8 +112,8 @@ async function run() {
     }),
   });
   await flush();
-  assert.match(elements.view.innerHTML, /Подключения · календарь HSE/);
-  assert.match(elements.view.innerHTML, /Ещё не запускалась/);
+  assert.match(elements.view.innerHTML, /Подключения/);
+  assert.match(elements.view.innerHTML, /Календарь ещё не подключён/);
 
   navItems.find((item) => item.dataset.view === "health").listeners.click();
   await flush();
@@ -143,7 +146,7 @@ async function run() {
   });
   await flush();
   assert.match(elements.view.innerHTML, /Баланс дня/);
-  assert.match(elements.view.innerHTML, /Подключить Apple Health/);
+  assert.match(elements.view.innerHTML, /data-connection="health">Подключить/);
   assert.equal(elements["add-task-button"].classNames.has("hidden"), true);
 
   requests.get("api/v1/state?period=today").resolve({
@@ -190,10 +193,10 @@ async function run() {
   await flush();
   navItems.find((item) => item.dataset.view === "today").listeners.click();
   assert.equal(elements["page-title"].textContent, "Сегодня");
-  assert.match(elements.view.innerHTML, /Здесь свободно/);
+  assert.match(elements.view.innerHTML, /День под контролем/);
 
   navItems.find((item) => item.dataset.view === "planner").listeners.click();
-  assert.equal(elements["page-title"].textContent, "Планнер");
+  assert.equal(elements["page-title"].textContent, "План");
   assert.match(elements.view.innerHTML, /Из неполного снимка известно событие/);
   assert.match(elements.view.innerHTML, /Расписание HSE неполное/);
   assert.match(elements.view.innerHTML, /Будущая лекция|23 сентября/);

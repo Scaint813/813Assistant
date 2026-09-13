@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import inspect
 import json
 import logging
 import re
@@ -120,6 +121,7 @@ class MiniAppServer:
         health_bridge_token: str = "",
         health_bridge_owner_id: int | None = None,
         health_bridge_public_url: str = "",
+        profile_updated_callback=None,
         dev_mode: bool = False,
     ):
         self.host = host
@@ -156,6 +158,7 @@ class MiniAppServer:
             else ""
         )
         self.health_bridge_public_url = health_bridge_public_url
+        self.profile_updated_callback = profile_updated_callback
         self.preferences_service = PreferencesService()
         self.validator = TelegramInitDataValidator(bot_token, allowed_user_ids)
         self.dev_mode = dev_mode
@@ -289,7 +292,15 @@ class MiniAppServer:
         return response
 
     async def _asset(self, request: web.Request) -> web.StreamResponse:
-        allowed = {"app.css", "app.js", "resource_store.js"}
+        allowed = {
+            "api_client.mjs",
+            "app.css",
+            "app.mjs",
+            "faq.mjs",
+            "formatters.mjs",
+            "resource_store.mjs",
+            "views.mjs",
+        }
         name = request.match_info["name"]
         if name not in allowed:
             raise web.HTTPNotFound()
@@ -772,6 +783,20 @@ class MiniAppServer:
             ).now()
             await self._rebuild_plan(session, user_id, now, reason="profile_updated")
             await session.commit()
+            profile_timezone = profile.timezone
+        if self.profile_updated_callback is not None:
+            try:
+                callback_result = self.profile_updated_callback(
+                    user_id,
+                    profile_timezone,
+                )
+                if inspect.isawaitable(callback_result):
+                    await callback_result
+            except Exception:
+                logger.exception(
+                    "Could not reschedule automation after profile update: user=%s",
+                    user_id,
+                )
         return await self._profile(request)
 
     async def _health_overview(self, request: web.Request) -> web.Response:
