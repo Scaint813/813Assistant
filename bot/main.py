@@ -10,7 +10,7 @@ from aiogram.enums import ParseMode
 from aiogram.types import BotCommand, MenuButtonWebApp, WebAppInfo
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from bot.config import get_config
+from bot.config import Config, get_config
 from bot.database.migrations import configure_engine, create_schema
 from bot.database.queries import get_or_create_runtime_state
 from bot.handlers import (
@@ -66,6 +66,29 @@ from bot.services.time_service import TimeService
 from bot.services.training_service import TrainingService
 from bot.services.transcription_service import TranscriptionService
 from bot.services.user_profile_service import UserProfileService
+from bot.services.vpn_status_service import VpnStatusService
+
+
+def build_vpn_status_service(cfg: Config) -> VpnStatusService:
+    """Keep an invalid optional VPN integration from taking down the assistant."""
+    try:
+        return VpnStatusService(
+            enabled=cfg.vpn_panel_enabled,
+            exit_node_name=cfg.vpn_exit_node_name,
+            expected_ipv4=cfg.vpn_expected_ipv4,
+            expected_ipv6=cfg.vpn_expected_ipv6,
+            device_ips=cfg.vpn_device_ips,
+            trusted_proxy_cidrs=cfg.vpn_trusted_proxy_cidrs,
+            client_ip_header=cfg.vpn_client_ip_header,
+            country_code=cfg.vpn_country_code,
+        )
+    except ValueError:
+        logging.getLogger(__name__).error(
+            "Invalid VPN panel configuration; VPN panel disabled. "
+            "Check VPN_EXPECTED_IP*, VPN_DEVICE_IPS, VPN_TRUSTED_PROXY_CIDRS, "
+            "VPN_CLIENT_IP_HEADER and VPN_COUNTRY_CODE."
+        )
+        return VpnStatusService()
 
 
 async def main() -> None:
@@ -331,6 +354,8 @@ async def main() -> None:
                     mini_app_url + "bridge/v1/health-snapshot"
                 ),
                 profile_updated_callback=automation_coordinator.profile_updated,
+                vpn_status_service=build_vpn_status_service(cfg),
+                vpn_owner_id=cfg.allowed_user_id,
             )
             await mini_app_server.start()
             try:

@@ -1,9 +1,9 @@
 import { ApiClient, initializeTelegram } from "./api_client.mjs";
 import { ResourceStore } from "./resource_store.mjs";
-import { createViewRenderer } from "./views.mjs?v=2";
+import { createViewRenderer } from "./views.mjs?v=3";
 
 const telegram = window.Telegram?.WebApp;
-const VIEW_NAMES = new Set(["today", "planner", "tasks", "health", "profile", "help"]);
+const VIEW_NAMES = new Set(["today", "planner", "tasks", "health", "profile", "help", "vpn"]);
 const TITLES = {
   today: "Сегодня",
   planner: "План",
@@ -11,6 +11,7 @@ const TITLES = {
   health: "Здоровье",
   profile: "Профиль",
   help: "Справка",
+  vpn: "Мой VPN",
 };
 const PERIODS = { today: "Сегодня", tomorrow: "Завтра", week: "Неделя" };
 const AUTO_REFRESH_MS = 90_000;
@@ -34,6 +35,8 @@ const state = {
   shortcutConfig: null,
   healthShortcutConfig: null,
   timezone: undefined,
+  vpnNeedsCheck: true,
+  vpnAccessDeniedStatus: null,
 };
 
 const els = {
@@ -69,21 +72,31 @@ function currentResourceKey() {
   if (state.view === "help") return null;
   if (state.view === "profile") return "profile";
   if (state.view === "health") return "health";
+  if (state.view === "vpn") return "vpn";
   return scheduleKey(state.view === "planner" ? state.period : "today");
 }
 
 function loadResource(key) {
   if (key === "profile") return api.request("api/v1/profile");
   if (key === "health") return api.request("api/v1/health");
+  if (key === "vpn") return api.request("api/v1/vpn");
   return api.request(`api/v1/state?period=${key.slice("schedule:".length)}`);
 }
 
-const resources = new ResourceStore(loadResource, (key) => {
+const resources = new ResourceStore(loadResource, (key, entry) => {
+  if (key === "vpn") {
+    if ([401, 403].includes(entry.error?.status)) {
+      state.vpnAccessDeniedStatus = entry.error.status;
+    } else if (entry.data !== null && !entry.loading && !entry.error) {
+      state.vpnAccessDeniedStatus = null;
+      if (document.visibilityState !== "hidden") state.vpnNeedsCheck = false;
+    }
+  }
   if (key === currentResourceKey()) render();
 });
 
 function setTelegramBackButton() {
-  const shouldShow = state.view === "help";
+  const shouldShow = ["help", "vpn"].includes(state.view);
   if (shouldShow) telegram?.BackButton?.show?.();
   else telegram?.BackButton?.hide?.();
 }
@@ -91,13 +104,13 @@ function setTelegramBackButton() {
 function setHeader() {
   els.title.textContent = TITLES[state.view];
   document.querySelectorAll(".nav-item").forEach((button) => {
-    const active = button.dataset.view === state.view;
+    const active = button.dataset.view === (state.view === "vpn" ? "profile" : state.view);
     button.classList.toggle("active", active);
     button.setAttribute("aria-current", active ? "page" : "false");
   });
   els.help?.classList.toggle("hidden", state.view === "help");
   els.refresh.classList.toggle("hidden", state.view === "help");
-  els.add.classList.toggle("hidden", ["health", "profile", "help", "tasks"].includes(state.view));
+  els.add.classList.toggle("hidden", ["health", "profile", "help", "tasks", "vpn"].includes(state.view));
   setTelegramBackButton();
 }
 
@@ -116,6 +129,15 @@ function render() {
   const key = currentResourceKey();
   const entry = resources.get(key);
   els.refresh.classList.toggle("spinning", entry.loading);
+
+  if (state.view === "vpn") {
+    els.date.textContent = "ПОДКЛЮЧЕНИЕ ЭТОГО УСТРОЙСТВА";
+    els.view.innerHTML = renderer.renderVpn(entry, {
+      needsCheck: state.vpnNeedsCheck || navigator.onLine === false,
+      accessDeniedStatus: state.vpnAccessDeniedStatus,
+    });
+    return;
+  }
 
   if (entry.data === null) {
     if (state.view === "planner") {
@@ -181,6 +203,10 @@ function ensureCurrent() {
   const key = currentResourceKey();
   if (!key) return;
   const entry = resources.get(key);
+  if (key === "vpn") {
+    refreshCurrent(true);
+    return;
+  }
   const stale = entry.data !== null && Date.now() - entry.updatedAt > STALE_AFTER_MS;
   refreshCurrent(stale);
 }
@@ -190,6 +216,7 @@ function navigate(view, { replace = false } = {}) {
   if (view !== "help") state.previousView = state.view === "help" ? state.previousView : state.view;
   else if (state.view !== "help") state.previousView = state.view;
   state.view = view;
+  if (view === "vpn") state.vpnNeedsCheck = true;
   try {
     if (view !== "help") window.sessionStorage?.setItem("813assistant:view", view);
     const url = `${window.location.pathname || ""}${window.location.search || ""}#${view}`;
@@ -204,7 +231,8 @@ function navigate(view, { replace = false } = {}) {
 }
 
 function goBack() {
-  if (state.view === "help") navigate(state.previousView || "profile", { replace: true });
+  if (state.view === "vpn") navigate("profile", { replace: true });
+  else if (state.view === "help") navigate(state.previousView || "profile", { replace: true });
 }
 
 function openTaskDialog() {
@@ -429,17 +457,28 @@ telegram?.BackButton?.onClick?.(goBack);
 window.addEventListener?.("popstate", () => {
   const view = (window.location.hash || "").replace(/^#/, "");
   state.view = VIEW_NAMES.has(view) ? view : "today";
+  if (state.view === "vpn") state.vpnNeedsCheck = true;
   render();
   ensureCurrent();
 });
 document.addEventListener("visibilitychange", () => {
+  if (state.view === "vpn") {
+    state.vpnNeedsCheck = true;
+    render();
+  }
   if (document.visibilityState === "visible") refreshCurrent(true);
 });
 window.addEventListener?.("online", () => {
   els.offline?.classList.add("hidden");
   refreshCurrent(true);
 });
-window.addEventListener?.("offline", () => els.offline?.classList.remove("hidden"));
+window.addEventListener?.("offline", () => {
+  els.offline?.classList.remove("hidden");
+  if (state.view === "vpn") {
+    state.vpnNeedsCheck = true;
+    render();
+  }
+});
 
 initializeTelegram(telegram);
 els.date.textContent = new Intl.DateTimeFormat("ru-RU", {
@@ -452,3 +491,14 @@ const refreshTimer = setInterval(() => {
   if (document.visibilityState === "visible") refreshCurrent(true);
 }, AUTO_REFRESH_MS);
 refreshTimer.unref?.();
+
+const vpnFreshnessTimer = setInterval(() => {
+  if (state.view !== "vpn" || document.visibilityState !== "visible") return;
+  const entry = resources.get("vpn");
+  if (!state.vpnNeedsCheck && entry.data !== null && !entry.loading
+      && Date.now() - entry.updatedAt > STALE_AFTER_MS) {
+    state.vpnNeedsCheck = true;
+    render();
+  }
+}, 5_000);
+vpnFreshnessTimer.unref?.();

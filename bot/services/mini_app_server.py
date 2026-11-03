@@ -29,6 +29,7 @@ from bot.database.models import (
 from bot.services.content_quality import is_meaningful_task
 from bot.services.datetime_utils import ensure_aware
 from bot.services.preferences_service import PreferencesService
+from bot.services.vpn_status_service import VpnStatusService
 
 logger = logging.getLogger(__name__)
 
@@ -122,6 +123,8 @@ class MiniAppServer:
         health_bridge_owner_id: int | None = None,
         health_bridge_public_url: str = "",
         profile_updated_callback=None,
+        vpn_status_service: VpnStatusService | None = None,
+        vpn_owner_id: int | None = None,
         dev_mode: bool = False,
     ):
         self.host = host
@@ -159,6 +162,8 @@ class MiniAppServer:
         )
         self.health_bridge_public_url = health_bridge_public_url
         self.profile_updated_callback = profile_updated_callback
+        self.vpn_status_service = vpn_status_service or VpnStatusService()
+        self.vpn_owner_id = int(vpn_owner_id or default_owner_id)
         self.preferences_service = PreferencesService()
         self.validator = TelegramInitDataValidator(bot_token, allowed_user_ids)
         self.dev_mode = dev_mode
@@ -189,6 +194,7 @@ class MiniAppServer:
         app.router.add_patch("/api/v1/tasks/{task_id}", self._update_task)
         app.router.add_get("/api/v1/profile", self._profile)
         app.router.add_patch("/api/v1/profile", self._update_profile)
+        app.router.add_get("/api/v1/vpn", self._vpn_status)
         app.router.add_get("/api/v1/health", self._health_overview)
         app.router.add_post("/api/v1/health/intake", self._update_health_intake)
         app.router.add_patch("/api/v1/health/goals", self._update_health_goals)
@@ -326,6 +332,15 @@ class MiniAppServer:
 
     async def _health(self, _request: web.Request) -> web.Response:
         return web.json_response({"status": "ok"})
+
+    async def _vpn_status(self, request: web.Request) -> web.Response:
+        if request["user_id"] != self.vpn_owner_id:
+            raise web.HTTPForbidden(reason="VPN panel is available only to the owner")
+        payload = await self.vpn_status_service.snapshot(
+            remote_ip=request.remote,
+            headers=request.headers,
+        )
+        return web.json_response(payload)
 
     async def _state(self, request: web.Request) -> web.Response:
         period = request.query.get("period", "today")
@@ -696,6 +711,7 @@ class MiniAppServer:
                 context = {}
         return web.json_response({
             "name": profile.name or "Пользователь",
+            "vpn_panel_available": user_id == self.vpn_owner_id,
             "timezone": profile.timezone,
             "timezone_options": self.user_profile_service.options(now),
             "home": str(context.get("home") or ""),

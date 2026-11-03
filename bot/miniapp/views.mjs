@@ -198,11 +198,99 @@ export function createViewRenderer({ getTimezone, periods }) {
           <div><strong>Календарь HSE</strong><p>${escapeHTML(syncLabel)}</p><small>${escapeHTML(syncDetail)}</small></div>
           ${profile.hse.iphone_bridge ? `<button class="secondary-button compact" type="button" data-connection="hse">${syncStatus === "fresh" ? "Данные" : "Настроить"}</button>` : '<span class="status-badge">выключено</span>'}
         </article>
+        ${profile.vpn_panel_available === true ? '<button class="support-link vpn-profile-link" type="button" data-nav-view="vpn"><span><strong>Мой VPN</strong><small>Сервер, устройства и проверка IP</small></span><b aria-hidden="true">›</b></button>' : ""}
         <button class="support-link" type="button" data-open-help><span>Справка и подключения</span><b aria-hidden="true">›</b></button>
         <details class="fallback-import"><summary>Резервный импорт .ics</summary>
           <form id="hse-form"><label class="field file-input"><span>Файл календаря</span><input name="calendar" type="file" accept=".ics,text/calendar" required></label><button class="primary-button full-width" type="submit">Загрузить .ics</button></form>
         </details>
       </div></section>`;
+  }
+
+  function vpnTimestamp(value) {
+    if (!value || !Number.isFinite(new Date(value).getTime())) return "нет данных";
+    return `${formatDate(value, { day: "numeric", month: "short" })}, ${formatTime(value)}`;
+  }
+
+  function vpnInstructionsHTML(name) {
+    const exitName = escapeHTML(name || "свой VPS");
+    return `<details class="vpn-instructions profile-card"><summary>Как включать VPN на Mac</summary><div class="vpn-instructions-content">
+      <ol><li>Нажми значок Tailscale в верхней строке macOS и выбери Connect.</li><li>В меню Exit Nodes выбери <strong>${exitName}</strong>.</li><li>Вернись сюда и нажми «Проверить IP». Для отключения используй Disconnect в Tailscale.</li></ol>
+      <p>Для запуска при входе: «Системные настройки → Основные → Объекты входа и расширения → Открывать при входе → + → Tailscale».</p>
+      <p>Миниапп проверяет соединение, но не переключает системный VPN. Автозапуск приложения не подтверждает блокировку интернета при обрыве VPN.</p>
+      <a class="secondary-button vpn-admin-link" href="https://login.tailscale.com/admin/machines" target="_blank" rel="noopener noreferrer">Устройства в Tailscale ↗</a>
+    </div></details>`;
+  }
+
+  function renderVpn(entry, { needsCheck = false, accessDeniedStatus = null } = {}) {
+    const intro = `<section class="vpn-intro"><button class="back-link" type="button" data-back>← Профиль</button><p>Проверка относится к устройству, на котором открыт миниапп. На телефоне она не проверяет маршрут Mac.</p></section>`;
+    const deniedStatus = accessDeniedStatus || entry.error?.status;
+    if (deniedStatus === 403) {
+      return `${intro}<section class="status-screen section-status"><h2>Панель доступна владельцу ассистента</h2><p>Остальные разделы продолжают работать.</p></section>`;
+    }
+    if (deniedStatus === 401) {
+      return intro + resourceStatusHTML({ ...entry, data: null, error: { status: 401 } });
+    }
+    if (!entry.data) {
+      return intro + resourceStatusHTML(entry);
+    }
+    const data = entry.data;
+    const exit = data.exit_node || {};
+    if (!data.enabled) {
+      return `${intro}<section class="profile-card vpn-card"><h2>Панель VPN ещё не настроена</h2><p>Данные сервера и проверка маршрута появятся после подключения панели владельцем.</p><button class="secondary-button" type="button" data-retry-current ${entry.loading ? "disabled" : ""}>Обновить</button></section>${vpnInstructionsHTML(exit.name)}`;
+    }
+    const connection = data.connection || {};
+    const fresh = !needsCheck && !entry.loading && !entry.error;
+    const observedFamily = [4, 6].includes(connection.family) ? connection.family : null;
+    const routeState = fresh && observedFamily && connection.observed_ip
+        && ["via_vps", "other_route"].includes(connection.state)
+      ? connection.state
+      : "unknown";
+    const route = {
+      via_vps: { tone: "good", title: "Этот запрос идёт через VPS", text: `Подтверждён маршрут IPv${observedFamily} для запроса из миниаппа.` },
+      other_route: { tone: "warning", title: "Этот запрос пришёл другим маршрутом", text: "Полученный IP не совпал с настроенным адресом VPS для этого семейства." },
+      unknown: { tone: "neutral", title: "Маршрут не подтверждён", text: "Не удалось подтвердить внешний IP этого запроса. Это не означает, что VPN выключен." },
+    }[routeState] || { tone: "neutral", title: "Маршрут не подтверждён", text: "Для этого соединения нет подтверждённых данных." };
+    if (entry.loading) {
+      route.title = "Проверяем подключение…";
+      route.text = "Предыдущий результат не считается текущим состоянием.";
+    } else if (entry.error) {
+      route.title = "Не удалось обновить проверку";
+      route.text = "Ниже сохранён предыдущий снимок. Обнови проверку, когда соединение восстановится.";
+    } else if (needsCheck) {
+      route.text = "Результат мог измениться. Нажми «Проверить IP», чтобы получить новый снимок соединения.";
+    }
+    const checkedAt = connection.checked_at || data.checked_at;
+    const familyNote = observedFamily && fresh
+      ? `IPv${observedFamily === 4 ? 6 : 4} этим запросом не проверен.`
+      : "IPv4 и IPv6 требуют отдельных проверок.";
+    const server = data.server || {};
+    const serverStates = {
+      running: "Tailscale запущен",
+      stopped: "Tailscale остановлен",
+      login_required: "Нужна авторизация Tailscale",
+      starting: "Tailscale запускается",
+      unknown: "Нет данных о Tailscale",
+      unavailable: "Не удалось получить состояние Tailscale",
+      disabled: "Проверка сервера выключена",
+      different_node: "Проверяется другой узел",
+    };
+    const serverTitle = fresh
+      ? (serverStates[server.state] || serverStates.unknown)
+      : "Текущее состояние не подтверждено";
+    const availability = (value) => value === true ? "В сети" : value === false ? "Не в сети" : "Нет данных";
+    const availableExit = (value) => value === true ? "Доступен" : value === false ? "Не подтверждён" : "Нет данных";
+    const devices = Array.isArray(data.devices) ? data.devices : [];
+    const deviceRows = devices.map((device) => `<li class="vpn-device"><div class="vpn-device-heading"><strong>${escapeHTML(device.name || "Устройство")}</strong><span class="status-badge">${fresh ? availability(device.online) : "Нет свежих данных"}</span></div><p>${escapeHTML((Array.isArray(device.tailscale_ips) ? device.tailscale_ips : []).join(" · ")) || "Адрес не получен"}</p><small>Последний контакт: ${escapeHTML(vpnTimestamp(device.last_seen))}</small><small>Использование Exit Node на устройстве не проверено.</small></li>`).join("");
+    const countryNames = { FI: "Финляндия", SE: "Швеция" };
+    const configuredCountry = exit.country_source === "configured" && exit.country_code
+      ? `${countryNames[exit.country_code] || exit.country_code} (${exit.country_code})`
+      : "Не указана";
+
+    return `${intro}<section class="vpn-route-card ${route.tone}" aria-live="polite" aria-busy="${Boolean(entry.loading)}"><span class="vpn-eyebrow">Запрос с этого устройства</span><h2>${escapeHTML(route.title)}</h2><p>${escapeHTML(route.text)}</p><dl class="vpn-facts"><div><dt>${fresh ? "Полученный IP" : "IP последней проверки"}</dt><dd>${escapeHTML(connection.observed_ip || "Нет данных")}</dd></div><div><dt>Проверено</dt><dd>${escapeHTML(vpnTimestamp(checkedAt))}</dd></div></dl><p class="vpn-note">${familyNote}</p><button class="primary-button full-width" type="button" data-retry-current ${entry.loading ? "disabled" : ""}>${entry.loading ? "Проверяем…" : "Проверить IP"}</button></section>
+      <section class="profile-card vpn-card"><h2>Сервер Tailscale</h2><p class="vpn-server-state">${escapeHTML(serverTitle)}</p><dl class="vpn-facts"><div><dt>Выходной узел</dt><dd>${escapeHTML(exit.name || "Не указан")}</dd></div>${server.name ? `<div><dt>Проверяемый узел</dt><dd>${escapeHTML(server.name)}</dd></div>` : ""}<div><dt>Устройство сервера</dt><dd>${fresh ? availability(server.online) : "Нет свежих данных"}</dd></div><div><dt>Exit Node</dt><dd>${fresh ? availableExit(server.exit_node_available) : "Нет свежих данных"}</dd></div><div><dt>Проверка сервера</dt><dd>${escapeHTML(vpnTimestamp(server.checked_at))}</dd></div></dl>${server.matches_expected === false ? '<p class="vpn-note">Проверяемый узел не совпадает с настроенным Exit Node. Состояние выбранного VPS неизвестно.</p>' : ""}<p class="vpn-note">Работа сервера не подтверждает маршрут интернета на твоих устройствах.</p></section>
+      <section class="profile-card vpn-card"><h2>Адрес выхода</h2><dl class="vpn-facts"><div><dt>Ожидаемый IPv4</dt><dd>${escapeHTML(exit.expected_ipv4 || "Не настроен")}</dd></div><div><dt>Ожидаемый IPv6</dt><dd>${escapeHTML(exit.expected_ipv6 || "Не настроен")}</dd></div><div><dt>Страна в настройках</dt><dd>${escapeHTML(configuredCountry)}</dd></div></dl><p class="vpn-note">Геолокация не проверяется автоматически. Закрепление IP у хостера не проверено.</p></section>
+      <section class="profile-card vpn-card"><h2>Устройства</h2>${deviceRows ? `<ul class="vpn-device-list">${deviceRows}</ul>` : '<p>Устройства для наблюдения пока не указаны.</p>'}<p class="vpn-note">Отсутствие связи может означать сон устройства. Доступность в Tailscale не подтверждает использование VPN для интернета.</p></section>
+      ${vpnInstructionsHTML(exit.name)}`;
   }
 
   function healthMetricHTML(label, value, hint, progress = null) {
@@ -316,6 +404,7 @@ export function createViewRenderer({ getTimezone, periods }) {
     renderProfile,
     renderTasks,
     renderToday,
+    renderVpn,
     resourceStatusHTML,
   };
 }

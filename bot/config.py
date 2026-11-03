@@ -62,6 +62,14 @@ class Config:
     reliability_enabled: bool
     backup_dir: str
     backup_retention_days: int
+    vpn_panel_enabled: bool = False
+    vpn_exit_node_name: str = ""
+    vpn_expected_ipv4: str = ""
+    vpn_expected_ipv6: str = ""
+    vpn_device_ips: tuple[str, ...] = ()
+    vpn_trusted_proxy_cidrs: tuple[str, ...] = ()
+    vpn_client_ip_header: str = ""
+    vpn_country_code: str = ""
 
 
 def _parse_time(key: str, default: str) -> time:
@@ -169,4 +177,20 @@ def get_config() -> Config:
         reliability_enabled=os.getenv("RELIABILITY_ENABLED", "true").lower() == "true",
         backup_dir=os.getenv("BACKUP_DIR", "./backups"),
         backup_retention_days=int(os.getenv("BACKUP_RETENTION_DAYS", "14")),
+        vpn_panel_enabled=os.getenv("VPN_PANEL_ENABLED", "false").lower() == "true",
+        vpn_exit_node_name=os.getenv("VPN_EXIT_NODE_NAME", "").strip(),
+        vpn_expected_ipv4=os.getenv("VPN_EXPECTED_IPV4", "").strip(),
+        vpn_expected_ipv6=os.getenv("VPN_EXPECTED_IPV6", "").strip(),
+        vpn_device_ips=tuple(
+            item.strip()
+            for item in os.getenv("VPN_DEVICE_IPS", "").split(",")
+            if item.strip()
+        ),
+        vpn_trusted_proxy_cidrs=tuple(
+            item.strip()
+            for item in os.getenv("VPN_TRUSTED_PROXY_CIDRS", "").split(",")
+            if item.strip()
+        ),
+        vpn_client_ip_header=os.getenv("VPN_CLIENT_IP_HEADER", "").strip(),
+        vpn_country_code=os.getenv("VPN_COUNTRY_CODE", "").strip().upper(),
     )

@@ -6,6 +6,8 @@ import json
 import time as time_module
 import unittest
 from datetime import date, datetime, time
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 from urllib.parse import urlencode
 from zoneinfo import ZoneInfo
 
@@ -237,6 +239,67 @@ class MiniAppAPITests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(401, response.status)
         self.assertIn("Telegram", (await response.json())["error"])
+
+    async def test_vpn_status_requires_signed_owner_and_is_not_cached(self):
+        snapshot = AsyncMock(return_value={"enabled": True, "server": {"state": "running"}})
+        self.service.vpn_status_service = SimpleNamespace(snapshot=snapshot)
+        now = int(time_module.time())
+        owner = {"Authorization": f"tma {signed_init_data('123:secret', 42, now)}"}
+
+        response = await self.client.get("/api/v1/vpn", headers=owner)
+
+        self.assertEqual(200, response.status)
+        self.assertEqual("no-store", response.headers["Cache-Control"])
+        self.assertTrue((await response.json())["enabled"])
+        snapshot.assert_awaited_once()
+        self.assertEqual("127.0.0.1", snapshot.await_args.kwargs["remote_ip"])
+
+    async def test_vpn_status_rejects_missing_tampered_and_expired_auth(self):
+        snapshot = AsyncMock()
+        self.service.vpn_status_service = SimpleNamespace(snapshot=snapshot)
+        now = int(time_module.time())
+        valid = signed_init_data("123:secret", 42, now)
+        headers_to_reject = (
+            {},
+            {"Authorization": f"tma {valid.replace('Test', 'Other')}"},
+            {"Authorization": f"tma {signed_init_data('123:secret', 42, now - 90_000)}"},
+        )
+        for headers in headers_to_reject:
+            with self.subTest(headers=bool(headers)):
+                response = await self.client.get("/api/v1/vpn", headers=headers)
+                self.assertEqual(401, response.status)
+                self.assertEqual("no-store", response.headers["Cache-Control"])
+        snapshot.assert_not_awaited()
+
+    async def test_vpn_status_is_private_even_for_another_allowed_user(self):
+        snapshot = AsyncMock()
+        self.service.vpn_status_service = SimpleNamespace(snapshot=snapshot)
+        auth = signed_init_data("123:secret", 43, int(time_module.time()))
+
+        response = await self.client.get(
+            "/api/v1/vpn", headers={"Authorization": f"tma {auth}"}
+        )
+
+        self.assertEqual(403, response.status)
+        self.assertEqual("no-store", response.headers["Cache-Control"])
+        snapshot.assert_not_awaited()
+
+    async def test_vpn_status_defaults_to_disabled_and_has_no_mutating_route(self):
+        response = await self.client.get("/api/v1/vpn", headers=self.headers)
+        payload = await response.json()
+
+        self.assertEqual(200, response.status)
+        self.assertFalse(payload["enabled"])
+        self.assertEqual("disabled", payload["server"]["state"])
+        mutation = await self.client.post("/api/v1/vpn", headers=self.headers, json={})
+        self.assertEqual(405, mutation.status)
+
+    async def test_profile_exposes_vpn_entry_only_to_the_owner(self):
+        for user_id, available in ((42, True), (43, False)):
+            response = await self.client.get(
+                "/api/v1/profile", headers={"X-Debug-User": str(user_id)}
+            )
+            self.assertEqual(available, (await response.json())["vpn_panel_available"])
 
     async def test_task_completion_is_visible_and_can_be_undone(self):
         created_response = await self.client.post(

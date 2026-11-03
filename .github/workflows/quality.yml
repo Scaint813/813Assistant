@@ -2,7 +2,7 @@ name: quality
 
 on:
   push:
-    branches: [main]
+    branches: [main, codex/vpn-panel]
   pull_request:
 
 permissions:
@@ -34,6 +34,7 @@ jobs:
           node --check bot/miniapp/views.mjs
           node tests/test_mini_app_resource_store.js
           node tests/test_mini_app_navigation.js
+          node tests/test_mini_app_vpn.js
       - name: Lint
         run: python -m ruff check bot tests
       - name: Tests
