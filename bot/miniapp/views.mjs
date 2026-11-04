@@ -222,44 +222,68 @@ export function createViewRenderer({ getTimezone, periods }) {
     </div></details>`;
   }
 
+  function externalIpStatus(result, exit, family, fresh) {
+    result = result || { status: "idle" };
+    const observed = normalizePublicIp(result.observed_ip, family);
+    const expected = normalizePublicIp(exit[`expected_ipv${family}`], family);
+    const stale = result.status === "stale" || (result.status === "complete"
+      && (!fresh || !Number.isFinite(result.updatedAt) || Date.now() - result.updatedAt > 45_000));
+    let tone = "neutral";
+    let label = "Не проверен";
+    let detail = "Нажми кнопку ниже, чтобы узнать внешний адрес этого устройства.";
+    if (result.status === "loading" && fresh) {
+      label = "Проверяем…";
+      detail = "Ждём ответ внешнего сервиса.";
+    } else if (stale || result.status === "loading") {
+      label = "Нужна новая проверка";
+      detail = "Предыдущий результат не подтверждает текущий маршрут.";
+    } else if (result.status === "complete") {
+      if (result.error || !observed) {
+        label = result.error === "invalid_response" || (!result.error && !observed)
+          ? "Некорректный ответ сервиса" : "Проверка недоступна";
+        detail = "Маршрут неизвестен. Это не означает, что VPN выключен.";
+      } else if (!expected) {
+        label = "Ожидаемый адрес не настроен";
+        detail = "Внешний IP получен; сравнить его с адресом VPS пока нельзя.";
+      } else if (observed === expected) {
+        label = "Совпадает с VPS";
+        tone = "good";
+        detail = `Внешний IPv${family} совпал с настроенным адресом выхода VPS.`;
+      } else {
+        label = "Другой адрес";
+        tone = "warning";
+        detail = `Внешний IPv${family} не совпал с настроенным адресом выхода VPS.`;
+      }
+    }
+    return { tone, label, detail, observed, stale };
+  }
+
   function externalIpHTML(external, exit, { fresh, checkEnabled }) {
     const loading = [4, 6].some((family) => external[family]?.status === "loading");
     const families = [4, 6].map((family) => {
       const result = external[family] || { status: "idle" };
-      const observed = normalizePublicIp(result.observed_ip, family);
-      const expected = normalizePublicIp(exit[`expected_ipv${family}`], family);
-      const stale = result.status === "stale" || (result.status === "complete"
-        && (!fresh || !Number.isFinite(result.updatedAt) || Date.now() - result.updatedAt > 45_000));
-      let tone = "neutral";
-      let label = "Не проверен";
-      let detail = "Нажми кнопку ниже, чтобы узнать внешний адрес этого устройства.";
-      if (result.status === "loading" && fresh) {
-        label = "Проверяем…";
-        detail = "Ждём ответ внешнего сервиса.";
-      } else if (stale || result.status === "loading") {
-        label = "Нужна новая проверка";
-        detail = "Предыдущий результат не подтверждает текущий маршрут.";
-      } else if (result.status === "complete") {
-        if (result.error || !observed) {
-          label = result.error === "invalid_response" || (!result.error && !observed)
-            ? "Некорректный ответ сервиса" : "Проверка недоступна";
-          detail = "Маршрут неизвестен. Это не означает, что VPN выключен.";
-        } else if (!expected) {
-          label = "Ожидаемый адрес не настроен";
-          detail = "Внешний IP получен; сравнить его с адресом VPS пока нельзя.";
-        } else if (observed === expected) {
-          label = "Совпадает с VPS";
-          tone = "good";
-          detail = `Внешний IPv${family} совпал с настроенным адресом выхода VPS.`;
-        } else {
-          label = "Другой адрес";
-          tone = "warning";
-          detail = `Внешний IPv${family} не совпал с настроенным адресом выхода VPS.`;
-        }
-      }
+      const { tone, label, detail, observed, stale } = externalIpStatus(result, exit, family, fresh);
       return `<article class="vpn-external-family ${tone}" data-vpn-external-family="${family}"><div class="vpn-device-heading"><h3>IPv${family}</h3><span class="status-badge">${label}</span></div><p>${detail}</p>${observed ? `<dl class="vpn-facts"><div><dt>${stale ? "Последний IP" : "Внешний IP"}</dt><dd>${escapeHTML(observed)}</dd></div><div><dt>Проверено</dt><dd>${escapeHTML(vpnTimestamp(result.checked_at))}</dd></div></dl>` : ""}</article>`;
     }).join("");
     return `<section class="profile-card vpn-card vpn-external-card" aria-live="polite" aria-busy="${loading && fresh}"><h2>Внешний IP этого устройства</h2><p>IPv4 и IPv6 проверяются отдельно. Результат получает браузер от внешнего сервиса; сервер его не подтверждает.</p><div class="vpn-external-families">${families}</div><p class="vpn-note">По нажатию запросы к api.ipify.org и api6.ipify.org; сервисы увидят ваш IP. Telegram-авторизация не передаётся.</p><button class="primary-button full-width" type="button" data-vpn-check-external ${!checkEnabled || loading ? "disabled" : ""}>${loading && fresh ? "Проверяем внешний IP…" : "Проверить внешний IP"}</button>${!checkEnabled ? '<p class="vpn-note">Сначала обнови подключение к серверу.</p>' : ""}</section>`;
+  }
+
+  function vpnDeviceHTML(device, { fresh, connection, server, external, exit }) {
+    const addresses = Array.isArray(device.tailscale_ips) ? device.tailscale_ips : [];
+    const current = fresh && connection.state === "via_tailnet"
+      && typeof connection.observed_ip === "string" && addresses.includes(connection.observed_ip);
+    const availability = !fresh ? "Нет свежих данных" : device.online === true
+      ? "В сети" : device.online === false ? "Не в сети" : "Нет данных";
+    const timestamp = vpnTimestamp(device.online === true ? server.checked_at : device.last_seen);
+    const contact = timestamp === "нет данных"
+      ? (device.online === true ? "Tailscale сообщает, что устройство в сети; время проверки недоступно."
+        : "Tailscale не передал время последнего контакта.")
+      : `${device.online === true ? "Доступность проверена" : "Последний контакт"}: ${timestamp}`;
+    const browserResults = current ? [4, 6].map((family) => {
+      const { label } = externalIpStatus(external[family], exit, family, fresh);
+      return `<small>IPv${family} миниаппа: ${escapeHTML(label)}</small>`;
+    }).join("") : "";
+    return `<li class="vpn-device"><div class="vpn-device-heading"><strong>${escapeHTML(device.name || "Устройство")}</strong><span class="status-badge">${availability}</span></div><p>${escapeHTML(addresses.join(" · ")) || "Адрес не получен"}</p><small>${escapeHTML(contact)}</small>${current ? '<p>На этом устройстве открыт миниапп.</p>' + browserResults : '<small>Маршрут интернета этого устройства удалённо не проверен. Для проверки открой миниапп на нём.</small>'}<small>Выбор Exit Node в системе удалённо не проверяется.</small></li>`;
   }
 
   function renderVpn(entry, {
@@ -326,7 +350,9 @@ export function createViewRenderer({ getTimezone, periods }) {
     const availability = (value) => value === true ? "В сети" : value === false ? "Не в сети" : "Нет данных";
     const availableExit = (value) => value === true ? "Доступен" : value === false ? "Не подтверждён" : "Нет данных";
     const devices = Array.isArray(data.devices) ? data.devices : [];
-    const deviceRows = devices.map((device) => `<li class="vpn-device"><div class="vpn-device-heading"><strong>${escapeHTML(device.name || "Устройство")}</strong><span class="status-badge">${fresh ? availability(device.online) : "Нет свежих данных"}</span></div><p>${escapeHTML((Array.isArray(device.tailscale_ips) ? device.tailscale_ips : []).join(" · ")) || "Адрес не получен"}</p><small>Последний контакт: ${escapeHTML(vpnTimestamp(device.last_seen))}</small><small>Использование Exit Node на устройстве не проверено.</small></li>`).join("");
+    const deviceRows = devices.map((device) => vpnDeviceHTML(device, {
+      fresh, connection, server, external, exit,
+    })).join("");
     const countryNames = { FI: "Финляндия", SE: "Швеция" };
     const configuredCountry = exit.country_source === "configured" && exit.country_code
       ? `${countryNames[exit.country_code] || exit.country_code} (${exit.country_code})`

@@ -43,6 +43,13 @@ function familyHTML(html, family) {
   return html.match(new RegExp(`<article class="vpn-external-family [^"]*" data-vpn-external-family="${family}">[\\s\\S]*?</article>`))?.[0] || "";
 }
 
+function deviceHTML(html, name = "Mac") {
+  const row = (html.match(/<li class="vpn-device">[\s\S]*?<\/li>/g) || [])
+    .find((value) => value.includes(`<strong>${name}</strong>`));
+  assert.ok(row, `device row for ${name} exists`);
+  return row;
+}
+
 function deferred() {
   let resolve;
   const promise = new Promise((resolvePromise) => { resolve = resolvePromise; });
@@ -75,7 +82,7 @@ class FakeElement {
 async function flush() { await new Promise((resolve) => setImmediate(resolve)); }
 
 async function run() {
-  const { createViewRenderer } = await import("../bot/miniapp/views.mjs?v=5");
+  const { createViewRenderer } = await import("../bot/miniapp/views.mjs?v=6");
   const renderer = createViewRenderer({ getTimezone: () => "Europe/Moscow", periods: {} });
   assert.match(renderer.renderProfile(profile()), /data-nav-view="vpn"/);
   assert.doesNotMatch(renderer.renderProfile(profile(false)), /data-nav-view="vpn"/);
@@ -84,11 +91,40 @@ async function run() {
     /vpn-route-card neutral/, /Подключение к VPS по Tailscale/, /внутренний адрес устройства в Tailscale/,
     /Внешние IPv4 и IPv6 этим запросом не проверены/, /На телефоне она не проверяет маршрут Mac/,
     /Финляндия \(FI\)/, /Закрепление IP у хостера не проверено/,
-    /Использование Exit Node на устройстве не проверено/, /Обновить подключение/, /Внешний IP этого устройства/,
+    /Выбор Exit Node в системе удалённо не проверяется/, /Обновить подключение/, /Внешний IP этого устройства/,
     /По нажатию запросы к api.ipify.org и api6.ipify.org; сервисы увидят ваш IP. Telegram-авторизация не передаётся/,
   ]) assert.match(ready, pattern);
   assert.doesNotMatch(ready, /data-vpn-toggle|VPN работает|Этот запрос идёт через VPS|Совпадает с VPS/);
   for (const family of [4, 6]) assert.match(familyHTML(ready, family), /Не проверен/);
+  assert.match(deviceHTML(ready), /На этом устройстве открыт миниапп/);
+  for (const family of [4, 6]) assert.match(deviceHTML(ready), new RegExp(`IPv${family} миниаппа: Не проверен`));
+
+  const online = snapshot();
+  online.server.checked_at = "2026-11-03T10:11:00Z";
+  online.checked_at = "2026-11-03T12:22:00Z";
+  online.connection.checked_at = "2026-11-03T13:33:00Z";
+  const onlineRow = deviceHTML(renderer.renderVpn(entry(online)));
+  assert.match(onlineRow, /Доступность проверена: [^<]*13:11/);
+  assert.doesNotMatch(onlineRow, /Последний контакт|15:22|16:33/);
+  online.devices[0].last_seen = "2026-11-01T08:17:00Z";
+  const onlineWithLastSeenRow = deviceHTML(renderer.renderVpn(entry(online)));
+  assert.match(onlineWithLastSeenRow, /Доступность проверена: [^<]*13:11/);
+  assert.doesNotMatch(onlineWithLastSeenRow, /Последний контакт|11:17/);
+  const offline = snapshot();
+  offline.devices[0].online = false;
+  offline.devices[0].last_seen = "2026-11-03T08:17:00Z";
+  const offlineRow = deviceHTML(renderer.renderVpn(entry(offline)));
+  assert.match(offlineRow, /Не в сети/);
+  assert.match(offlineRow, /Последний контакт: [^<]*11:17/);
+  assert.doesNotMatch(offlineRow, /Доступность проверена/);
+  const unknownDevice = snapshot();
+  unknownDevice.devices[0].online = null;
+  assert.match(deviceHTML(renderer.renderVpn(entry(unknownDevice))), /Нет данных|нет данных/);
+  const missingProbeTime = snapshot();
+  missingProbeTime.server.checked_at = null;
+  const missingProbeTimeRow = deviceHTML(renderer.renderVpn(entry(missingProbeTime)));
+  assert.match(missingProbeTimeRow, /Нет данных|нет данных|неизвестн|не получен|недоступно/);
+  assert.doesNotMatch(missingProbeTimeRow, /15:00/);
 
   const external = { 4: externalResult(4, "89.22.228.86"), 6: externalResult(6, null, "unavailable") };
   const partial = renderer.renderVpn(entry(), { external, externalCheckEnabled: true });
@@ -96,6 +132,36 @@ async function run() {
   assert.match(familyHTML(partial, 4), /Совпадает с VPS/);
   assert.match(familyHTML(partial, 6), /Проверка недоступна/);
   assert.doesNotMatch(familyHTML(partial, 6), /good|Другой адрес/);
+  assert.match(deviceHTML(partial), /IPv4 миниаппа: Совпадает с VPS/);
+  assert.match(deviceHTML(partial), /IPv6 миниаппа: Проверка недоступна/);
+  assert.match(deviceHTML(partial), /Выбор Exit Node в системе удалённо не проверяется/);
+  const twoDevices = snapshot();
+  twoDevices.devices.push({ name: "Phone", tailscale_ips: ["100.65.1.2"], online: true, last_seen: null, exit_node_in_use: null });
+  const twoDevicesHTML = renderer.renderVpn(entry(twoDevices), { external });
+  assert.match(deviceHTML(twoDevicesHTML), /На этом устройстве открыт миниапп/);
+  assert.match(deviceHTML(twoDevicesHTML), /IPv4 миниаппа: Совпадает с VPS/);
+  assert.doesNotMatch(deviceHTML(twoDevicesHTML, "Phone"), /На этом устройстве открыт миниапп|IPv[46] миниаппа|Совпадает с VPS/);
+  for (const connection of [
+    { state: "via_tailnet", observed_ip: "100.124.44.540", family: 4 },
+    { state: "via_tailnet", observed_ip: "100.65.1.3", family: 4 },
+    { state: "via_vps", observed_ip: "89.22.228.86", family: 4 },
+    { state: "other_route", observed_ip: "100.124.44.54", family: 4 },
+    { state: "unknown", observed_ip: "100.124.44.54", family: 4 },
+  ]) {
+    const unmatched = { ...snapshot(), connection };
+    assert.doesNotMatch(deviceHTML(renderer.renderVpn(entry(unmatched), { external })), /На этом устройстве открыт миниапп|IPv[46] миниаппа|Совпадает с VPS/);
+  }
+  const ipv6Device = snapshot();
+  ipv6Device.devices[0].tailscale_ips.push("fd7a:115c:a1e0::a1");
+  ipv6Device.connection = { state: "via_tailnet", observed_ip: "fd7a:115c:a1e0::a1", family: 6 };
+  assert.match(deviceHTML(renderer.renderVpn(entry(ipv6Device), { external })), /На этом устройстве открыт миниапп/);
+  for (const [resourceOptions, renderOptions] of [
+    [{ loading: true }, {}], [{ error: { status: 503 } }, {}], [{}, { needsCheck: true }],
+  ]) {
+    const staleDevice = deviceHTML(renderer.renderVpn(entry(snapshot(), resourceOptions), { external, ...renderOptions }));
+    assert.match(staleDevice, /Нет свежих данных/);
+    assert.doesNotMatch(staleDevice, /На этом устройстве открыт миниапп|IPv[46] миниаппа: Совпадает с VPS/);
+  }
   const canonical = snapshot();
   canonical.exit_node.expected_ipv6 = "2A0B:4140:5020:0:0:0:0:2";
   assert.match(familyHTML(renderer.renderVpn(entry(canonical), {
@@ -114,8 +180,17 @@ async function run() {
   for (const result of [
     externalResult(4, "89.22.228.86", null, { status: "stale" }),
     externalResult(4, "89.22.228.86", null, { updatedAt: Date.now() - 46_000 }),
+    externalResult(4, "89.22.228.86", null, { updatedAt: undefined }),
+    externalResult(4, "89.22.228.86", null, { status: "loading" }),
     externalResult(4, "100.124.44.54"),
-  ]) assert.doesNotMatch(familyHTML(renderer.renderVpn(entry(), { external: { 4: result } }), 4), /good|Совпадает с VPS|Другой адрес/);
+  ]) {
+    const html = renderer.renderVpn(entry(), { external: { 4: result } });
+    assert.doesNotMatch(familyHTML(html, 4), /good|Совпадает с VPS|Другой адрес/);
+    assert.doesNotMatch(deviceHTML(html), /Совпадает с VPS|Другой адрес/);
+  }
+  assert.match(deviceHTML(renderer.renderVpn(entry(), {
+    external: { 4: externalResult(4, "89.22.228.86", null, { status: "stale" }) },
+  })), /IPv4 миниаппа: Нужна новая проверка/);
   assert.doesNotMatch(familyHTML(renderer.renderVpn(entry(), { external, needsCheck: true }), 4), /good|Совпадает с VPS/);
 
   const publicRoute = snapshot();

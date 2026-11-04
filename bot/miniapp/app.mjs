@@ -1,6 +1,6 @@
 import { ApiClient, initializeTelegram } from "./api_client.mjs";
 import { ResourceStore } from "./resource_store.mjs";
-import { createViewRenderer } from "./views.mjs?v=5";
+import { createViewRenderer } from "./views.mjs?v=6";
 import { probeExternalIp } from "./external_ip.mjs";
 
 const telegram = window.Telegram?.WebApp;
