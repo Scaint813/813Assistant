@@ -7,7 +7,7 @@ import time as time_module
 import unittest
 from datetime import date, datetime, time
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 from urllib.parse import urlencode
 from zoneinfo import ZoneInfo
 
@@ -96,6 +96,144 @@ class TelegramInitDataValidatorTests(unittest.TestCase):
                 signed_init_data("123:secret", 99, now),
                 now_timestamp=now,
             )
+
+
+class ProjectsCatalogTests(unittest.IsolatedAsyncioTestCase):
+    def make_service(self, url="", *, owner_id=42):
+        return MiniAppServer(
+            "127.0.0.1", 0, "123:secret", [42, 43],
+            None, None, None, None, None, None,
+            vpn_owner_id=owner_id,
+            spam_project_url=url,
+        )
+
+    def signed_headers(self, user_id=42):
+        auth = signed_init_data("123:secret", user_id, int(time_module.time()))
+        return {"Authorization": f"tma {auth}"}
+
+    async def catalog(self, service, *, headers=None):
+        async with TestClient(TestServer(service.create_app())) as client:
+            with patch("aiohttp.ClientSession", side_effect=AssertionError("external request")):
+                response = await client.get(
+                    "/api/v1/projects",
+                    headers=headers if headers is not None else self.signed_headers(),
+                )
+                return response.status, response.headers, await response.json()
+
+    async def test_catalog_has_internal_vpn_and_optional_external_project(self):
+        valid_urls = (
+            "", "https://spam.example.com/panel", "https://spam.example.com:8443/panel",
+            "https://192.0.2.1/panel", "https://[2001:db8::1]:8443/panel",
+            "https://пример.рф/панель", "https://spam.example.com/" + "x" * 2023,
+        )
+        for url in valid_urls:
+            with self.subTest(url=url):
+                service = self.make_service(url)
+                snapshot = AsyncMock()
+                service.vpn_status_service = SimpleNamespace(snapshot=snapshot)
+                status, headers, payload = await self.catalog(service)
+                self.assertEqual(200, status)
+                self.assertEqual("no-store", headers["Cache-Control"])
+                self.assertEqual({"projects": [
+                    {
+                        "id": "vpn", "name": "VPN",
+                        "description": "Сервер, устройства и внешний IP",
+                        "kind": "internal", "view": "vpn", "available": True,
+                    },
+                    {
+                        "id": "813spam", "name": "813spam",
+                        "description": "Панель проекта", "kind": "external",
+                        "url": url or None, "available": bool(url),
+                        "automatic_login_available": False,
+                    },
+                ]}, payload)
+                snapshot.assert_not_awaited()
+
+    async def test_unsafe_project_urls_are_disabled_and_never_exposed(self):
+        invalid_urls = (
+            "https://user:secret@spam.example.com/panel",
+            "https://user@spam.example.com/panel",
+            "https://spam.example.com/panel?password=secret",
+            "https://spam.example.com/panel?",
+            "https://spam.example.com/#secret",
+            "https://spam.example.com/#",
+            "javascript:alert('secret')",
+            "/secret/panel",
+            "//spam.example.com/panel",
+            "http://spam.example.com/panel",
+            "https://spam.example.com:65536/panel",
+            "https://spam.example.com:0/panel",
+            "https://spam.example.com:secret/panel",
+            "https://spam.example.com:/panel",
+            "https://-invalid.example.com/panel",
+            "https://invalid..example.com/panel",
+            "https://" + "x" * 64 + ".example.com/panel",
+            "https://spam%2eexample.com/panel",
+            "https://999.999.999.999/panel",
+            "https://[::1]invalid/panel",
+            "https://[not-an-ip]/panel",
+            "https://spam.example.com\\@other.example.com/panel",
+            " https://spam.example.com/panel",
+            "https://spam.example.com/panel with space",
+            "https://spam.example.com/\nsecret",
+            "https://spam.example.com/\tsecret",
+            "https://spam.example.com/\x00secret",
+            "https://spam.example.com/\x7fsecret",
+            "https://spam.example.com/\x85secret",
+            "https://spam.example.com/" + "x" * 2048,
+        )
+        for url in invalid_urls:
+            with self.subTest(url=url):
+                status, _, payload = await self.catalog(self.make_service(url))
+                self.assertEqual(200, status)
+                project = payload["projects"][1]
+                self.assertIsNone(project["url"])
+                self.assertFalse(project["available"])
+                self.assertFalse(project["automatic_login_available"])
+                self.assertNotIn("secret", json.dumps(payload))
+
+    async def test_projects_are_private_to_the_configured_owner(self):
+        url = "https://spam.example.com/panel"
+        for owner_id, user_id in ((42, 43), (43, 42)):
+            with self.subTest(owner_id=owner_id):
+                status, headers, payload = await self.catalog(
+                    self.make_service(url, owner_id=owner_id),
+                    headers=self.signed_headers(user_id),
+                )
+                self.assertEqual(403, status)
+                self.assertEqual("no-store", headers["Cache-Control"])
+                self.assertNotIn("projects", payload)
+                self.assertNotIn(url, json.dumps(payload))
+
+    async def test_projects_reject_missing_tampered_and_expired_telegram_auth(self):
+        now = int(time_module.time())
+        valid = signed_init_data("123:secret", 42, now)
+        invalid_headers = (
+            {},
+            {"Authorization": f"tma {valid.replace('Test', 'Other')}"},
+            {"Authorization": f"tma {signed_init_data('123:secret', 42, now - 90_000)}"},
+        )
+        for headers in invalid_headers:
+            with self.subTest(headers=bool(headers)):
+                status, response_headers, payload = await self.catalog(
+                    self.make_service("https://spam.example.com/panel"), headers=headers,
+                )
+                self.assertEqual(401, status)
+                self.assertEqual("no-store", response_headers["Cache-Control"])
+                self.assertNotIn("projects", payload)
+                self.assertNotIn("spam.example.com", json.dumps(payload))
+
+    async def test_projects_catalog_has_no_login_or_mutation_route(self):
+        service = self.make_service("https://spam.example.com/panel")
+        async with TestClient(TestServer(service.create_app())) as client:
+            response = await client.post(
+                "/api/v1/projects", headers=self.signed_headers(), json={},
+            )
+            self.assertEqual(405, response.status)
+            response = await client.post(
+                "/api/v1/projects/813spam/login", headers=self.signed_headers(), json={},
+            )
+            self.assertEqual(404, response.status)
 
 
 class MiniAppAPITests(unittest.IsolatedAsyncioTestCase):
@@ -331,12 +469,14 @@ class MiniAppAPITests(unittest.IsolatedAsyncioTestCase):
         mutation = await self.client.post("/api/v1/vpn", headers=self.headers, json={})
         self.assertEqual(405, mutation.status)
 
-    async def test_profile_exposes_vpn_entry_only_to_the_owner(self):
+    async def test_profile_exposes_projects_and_legacy_vpn_entry_only_to_the_owner(self):
         for user_id, available in ((42, True), (43, False)):
             response = await self.client.get(
                 "/api/v1/profile", headers={"X-Debug-User": str(user_id)}
             )
-            self.assertEqual(available, (await response.json())["vpn_panel_available"])
+            profile = await response.json()
+            self.assertEqual(available, profile["projects_available"])
+            self.assertEqual(available, profile["vpn_panel_available"])
 
     async def test_task_completion_is_visible_and_can_be_undone(self):
         created_response = await self.client.post(

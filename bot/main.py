@@ -356,6 +356,7 @@ async def main() -> None:
                 profile_updated_callback=automation_coordinator.profile_updated,
                 vpn_status_service=build_vpn_status_service(cfg),
                 vpn_owner_id=cfg.allowed_user_id,
+                spam_project_url=cfg.project_813spam_url,
             )
             await mini_app_server.start()
             try:

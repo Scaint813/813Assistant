@@ -70,6 +70,7 @@ class Config:
     vpn_trusted_proxy_cidrs: tuple[str, ...] = ()
     vpn_client_ip_header: str = ""
     vpn_country_code: str = ""
+    project_813spam_url: str = ""
 
 
 def _parse_time(key: str, default: str) -> time:
@@ -193,4 +194,5 @@ def get_config() -> Config:
         ),
         vpn_client_ip_header=os.getenv("VPN_CLIENT_IP_HEADER", "").strip(),
         vpn_country_code=os.getenv("VPN_COUNTRY_CODE", "").strip().upper(),
+        project_813spam_url=os.getenv("PROJECT_813SPAM_URL", ""),
     )

@@ -199,12 +199,52 @@ export function createViewRenderer({ getTimezone, periods }) {
           <div><strong>Календарь HSE</strong><p>${escapeHTML(syncLabel)}</p><small>${escapeHTML(syncDetail)}</small></div>
           ${profile.hse.iphone_bridge ? `<button class="secondary-button compact" type="button" data-connection="hse">${syncStatus === "fresh" ? "Данные" : "Настроить"}</button>` : '<span class="status-badge">выключено</span>'}
         </article>
-        ${profile.vpn_panel_available === true ? '<button class="support-link vpn-profile-link" type="button" data-nav-view="vpn"><span><strong>Мой VPN</strong><small>Сервер, устройства и проверка IP</small></span><b aria-hidden="true">›</b></button>' : ""}
+        ${profile.projects_available === true || profile.vpn_panel_available === true ? '<button class="support-link projects-profile-link" type="button" data-nav-view="projects"><span><strong>Мои проекты</strong><small>VPN и 813spam</small></span><b aria-hidden="true">›</b></button>' : ""}
         <button class="support-link" type="button" data-open-help><span>Справка и подключения</span><b aria-hidden="true">›</b></button>
         <details class="fallback-import"><summary>Резервный импорт .ics</summary>
           <form id="hse-form"><label class="field file-input"><span>Файл календаря</span><input name="calendar" type="file" accept=".ics,text/calendar" required></label><button class="primary-button full-width" type="submit">Загрузить .ics</button></form>
         </details>
       </div></section>`;
+  }
+
+  function projectUrl(value) {
+    if (typeof value !== "string" || !/^https:\/\//i.test(value)
+        || /[\u0000-\u0020\u007f-\u009f\\?#]/.test(value)) return null;
+    try {
+      const url = new URL(value);
+      const authority = value.match(/^https:\/\/([^/]+)/i)?.[1] || "";
+      if (url.protocol !== "https:" || !url.hostname || url.username || url.password
+          || authority.includes("@") || url.search || url.hash) return null;
+      return url.href;
+    } catch (_error) {
+      return null;
+    }
+  }
+
+  function renderProjects(entry, { accessDeniedStatus = null } = {}) {
+    const deniedStatus = accessDeniedStatus || entry.error?.status;
+    if (deniedStatus === 403) {
+      return '<section class="status-screen section-status"><h2>Проекты доступны владельцу ассистента</h2><p>Остальные разделы продолжают работать.</p></section>';
+    }
+    if (deniedStatus === 401) {
+      return resourceStatusHTML({ ...entry, data: null, error: { status: 401 } });
+    }
+    if (!entry.data) return resourceStatusHTML(entry);
+
+    const projects = Array.isArray(entry.data.projects) ? entry.data.projects : [];
+    const vpn = projects.find((project) => project?.id === "vpn");
+    const spam = projects.find((project) => project?.id === "813spam");
+    const spamUrl = spam?.available === true ? projectUrl(spam.url) : null;
+    const status = entry.loading
+      ? '<p class="projects-status" role="status">Обновляем проекты…</p>'
+      : entry.error
+        ? '<div class="notice" role="status"><strong>Не удалось обновить проекты</strong><span>Показаны последние данные.</span><button class="text-button" type="button" data-retry-current>Повторить</button></div>'
+        : "";
+    return `<section class="projects-intro"><p>Открой нужный проект и управляй им в его панели.</p></section>${status}
+      <div class="projects-list">
+        ${vpn ? `<article class="profile-card project-card" data-project-id="vpn"><div><span class="project-icon" aria-hidden="true">V</span><h2>VPN</h2><p>${escapeHTML(vpn.description || "Сервер, устройства и внешний IP")}</p></div>${vpn.available === true && vpn.kind === "internal" && vpn.view === "vpn" ? '<button class="primary-button full-width" type="button" data-nav-view="vpn">Открыть VPN</button>' : '<button class="secondary-button full-width" type="button" disabled>Панель недоступна</button>'}</article>` : ""}
+        ${spam ? `<article class="profile-card project-card" data-project-id="813spam"><div><span class="project-icon" aria-hidden="true">813</span><h2>813spam</h2><p>${escapeHTML(spam.description || "Панель проекта")}</p></div>${spamUrl && spam.kind === "external" ? `<a class="primary-button full-width project-open-link" href="${escapeHTML(spamUrl)}" target="_blank" rel="noopener noreferrer">Открыть 813spam</a>` : '<button class="secondary-button full-width" type="button" disabled>Ссылка не настроена</button>'}<p class="project-note">Автовход пока не подключён.</p></article>` : ""}
+      </div>${!vpn && !spam ? '<div class="empty-state"><strong>Проекты пока не добавлены</strong></div>' : ""}`;
   }
 
   function vpnTimestamp(value) {
@@ -289,7 +329,7 @@ export function createViewRenderer({ getTimezone, periods }) {
   function renderVpn(entry, {
     needsCheck = false, accessDeniedStatus = null, external = {}, externalCheckEnabled = false,
   } = {}) {
-    const intro = `<section class="vpn-intro"><button class="back-link" type="button" data-back>← Профиль</button><p>Проверка относится к устройству, на котором открыт миниапп. На телефоне она не проверяет маршрут Mac.</p></section>`;
+    const intro = `<section class="vpn-intro"><button class="back-link" type="button" data-back>← Мои проекты</button><p>Проверка относится к устройству, на котором открыт миниапп. На телефоне она не проверяет маршрут Mac.</p></section>`;
     const deniedStatus = accessDeniedStatus || entry.error?.status;
     if (deniedStatus === 403) {
       return `${intro}<section class="status-screen section-status"><h2>Панель доступна владельцу ассистента</h2><p>Остальные разделы продолжают работать.</p></section>`;
@@ -475,6 +515,7 @@ export function createViewRenderer({ getTimezone, periods }) {
     renderHelp,
     renderPlanner,
     renderProfile,
+    renderProjects,
     renderTasks,
     renderToday,
     renderVpn,

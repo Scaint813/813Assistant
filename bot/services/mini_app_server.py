@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import inspect
+import ipaddress
 import json
 import logging
 import re
@@ -10,7 +11,7 @@ import time as time_module
 from datetime import datetime, time, timedelta
 from pathlib import Path
 from typing import ClassVar
-from urllib.parse import parse_qsl
+from urllib.parse import parse_qsl, urlsplit
 
 from aiohttp import web
 from sqlalchemy import func, select
@@ -32,6 +33,51 @@ from bot.services.preferences_service import PreferencesService
 from bot.services.vpn_status_service import VpnStatusService
 
 logger = logging.getLogger(__name__)
+
+
+def _safe_project_url(value: str) -> str | None:
+    """Allow plain HTTPS navigation targets without exposing URL credentials."""
+    if not value or len(value) > 2048:
+        return None
+    if any(
+        char.isspace() or ord(char) < 32 or 127 <= ord(char) <= 159
+        for char in value
+    ) or any(char in value for char in "\\?#"):
+        return None
+    try:
+        parsed = urlsplit(value)
+        hostname = parsed.hostname
+        port = parsed.port
+        if (
+            parsed.scheme != "https"
+            or not hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or (port is not None and not 1 <= port <= 65535)
+        ):
+            return None
+        if ":" in hostname:
+            if not re.fullmatch(r"\[[0-9a-fA-F:.]+\](?::[0-9]+)?", parsed.netloc):
+                return None
+            if ipaddress.ip_address(hostname).version != 6:
+                return None
+        else:
+            if not re.fullmatch(r"[^\[\]:]+(?::[0-9]+)?", parsed.netloc):
+                return None
+            ascii_hostname = hostname.encode("idna").decode("ascii").rstrip(".")
+            if not ascii_hostname or len(ascii_hostname) > 253:
+                return None
+            labels = ascii_hostname.split(".")
+            if not all(
+                re.fullmatch(r"[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?", label)
+                for label in labels
+            ):
+                return None
+            if labels[-1].isdigit():
+                ipaddress.IPv4Address(ascii_hostname)
+    except (UnicodeError, ValueError):
+        return None
+    return value
 
 
 class MiniAppAuthError(ValueError):
@@ -125,6 +171,7 @@ class MiniAppServer:
         profile_updated_callback=None,
         vpn_status_service: VpnStatusService | None = None,
         vpn_owner_id: int | None = None,
+        spam_project_url: str = "",
         dev_mode: bool = False,
     ):
         self.host = host
@@ -164,6 +211,7 @@ class MiniAppServer:
         self.profile_updated_callback = profile_updated_callback
         self.vpn_status_service = vpn_status_service or VpnStatusService()
         self.vpn_owner_id = int(vpn_owner_id or default_owner_id)
+        self.spam_project_url = _safe_project_url(spam_project_url)
         self.preferences_service = PreferencesService()
         self.validator = TelegramInitDataValidator(bot_token, allowed_user_ids)
         self.dev_mode = dev_mode
@@ -194,6 +242,7 @@ class MiniAppServer:
         app.router.add_patch("/api/v1/tasks/{task_id}", self._update_task)
         app.router.add_get("/api/v1/profile", self._profile)
         app.router.add_patch("/api/v1/profile", self._update_profile)
+        app.router.add_get("/api/v1/projects", self._projects)
         app.router.add_get("/api/v1/vpn", self._vpn_status)
         app.router.add_get("/api/v1/health", self._health_overview)
         app.router.add_post("/api/v1/health/intake", self._update_health_intake)
@@ -343,6 +392,31 @@ class MiniAppServer:
             headers=request.headers,
         )
         return web.json_response(payload)
+
+    async def _projects(self, request: web.Request) -> web.Response:
+        if request["user_id"] != self.vpn_owner_id:
+            raise web.HTTPForbidden(reason="Projects are available only to the owner")
+        return web.json_response({
+            "projects": [
+                {
+                    "id": "vpn",
+                    "name": "VPN",
+                    "description": "Сервер, устройства и внешний IP",
+                    "kind": "internal",
+                    "view": "vpn",
+                    "available": True,
+                },
+                {
+                    "id": "813spam",
+                    "name": "813spam",
+                    "description": "Панель проекта",
+                    "kind": "external",
+                    "url": self.spam_project_url,
+                    "available": self.spam_project_url is not None,
+                    "automatic_login_available": False,
+                },
+            ],
+        })
 
     async def _state(self, request: web.Request) -> web.Response:
         period = request.query.get("period", "today")
@@ -713,6 +787,7 @@ class MiniAppServer:
                 context = {}
         return web.json_response({
             "name": profile.name or "Пользователь",
+            "projects_available": user_id == self.vpn_owner_id,
             "vpn_panel_available": user_id == self.vpn_owner_id,
             "timezone": profile.timezone,
             "timezone_options": self.user_profile_service.options(now),

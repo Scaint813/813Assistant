@@ -47,7 +47,7 @@ async function run() {
     "toast", "offline-banner",
   ];
   const elements = Object.fromEntries(ids.map((id) => [id, new FakeElement()]));
-  const navItems = ["today", "planner", "tasks", "health", "profile"].map(
+  const navItems = ["today", "planner", "tasks", "health", "projects", "profile"].map(
     (view) => new FakeElement({ view }),
   );
   const requests = new Map();

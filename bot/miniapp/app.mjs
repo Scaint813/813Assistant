@@ -1,15 +1,16 @@
 import { ApiClient, initializeTelegram } from "./api_client.mjs";
 import { ResourceStore } from "./resource_store.mjs";
-import { createViewRenderer } from "./views.mjs?v=6";
+import { createViewRenderer } from "./views.mjs?v=7";
 import { probeExternalIp } from "./external_ip.mjs";
 
 const telegram = window.Telegram?.WebApp;
-const VIEW_NAMES = new Set(["today", "planner", "tasks", "health", "profile", "help", "vpn"]);
+const VIEW_NAMES = new Set(["today", "planner", "tasks", "health", "projects", "profile", "help", "vpn"]);
 const TITLES = {
   today: "Сегодня",
   planner: "План",
   tasks: "Задачи",
   health: "Здоровье",
+  projects: "Мои проекты",
   profile: "Профиль",
   help: "Справка",
   vpn: "Мой VPN",
@@ -36,6 +37,7 @@ const state = {
   shortcutConfig: null,
   healthShortcutConfig: null,
   timezone: undefined,
+  projectsAccessDeniedStatus: null,
   vpnNeedsCheck: true,
   vpnAccessDeniedStatus: null,
   vpnExternal: { 4: { status: "idle" }, 6: { status: "idle" } },
@@ -93,6 +95,7 @@ function currentResourceKey() {
   if (state.view === "help") return null;
   if (state.view === "profile") return "profile";
   if (state.view === "health") return "health";
+  if (state.view === "projects") return "projects";
   if (state.view === "vpn") return "vpn";
   return scheduleKey(state.view === "planner" ? state.period : "today");
 }
@@ -100,11 +103,19 @@ function currentResourceKey() {
 function loadResource(key) {
   if (key === "profile") return api.request("api/v1/profile");
   if (key === "health") return api.request("api/v1/health");
+  if (key === "projects") return api.request("api/v1/projects");
   if (key === "vpn") return api.request("api/v1/vpn");
   return api.request(`api/v1/state?period=${key.slice("schedule:".length)}`);
 }
 
 const resources = new ResourceStore(loadResource, (key, entry) => {
+  if (key === "projects") {
+    if ([401, 403].includes(entry.error?.status)) {
+      state.projectsAccessDeniedStatus = entry.error.status;
+    } else if (entry.data !== null && !entry.loading && !entry.error) {
+      state.projectsAccessDeniedStatus = null;
+    }
+  }
   if (key === "vpn") {
     if ([401, 403].includes(entry.error?.status)) {
       state.vpnAccessDeniedStatus = entry.error.status;
@@ -131,13 +142,13 @@ function setTelegramBackButton() {
 function setHeader() {
   els.title.textContent = TITLES[state.view];
   document.querySelectorAll(".nav-item").forEach((button) => {
-    const active = button.dataset.view === (state.view === "vpn" ? "profile" : state.view);
+    const active = button.dataset.view === (state.view === "vpn" ? "projects" : state.view);
     button.classList.toggle("active", active);
     button.setAttribute("aria-current", active ? "page" : "false");
   });
   els.help?.classList.toggle("hidden", state.view === "help");
   els.refresh.classList.toggle("hidden", state.view === "help");
-  els.add.classList.toggle("hidden", ["health", "profile", "help", "tasks", "vpn"].includes(state.view));
+  els.add.classList.toggle("hidden", ["health", "projects", "profile", "help", "tasks", "vpn"].includes(state.view));
   setTelegramBackButton();
 }
 
@@ -156,6 +167,12 @@ function render() {
   const key = currentResourceKey();
   const entry = resources.get(key);
   els.refresh.classList.toggle("spinning", entry.loading);
+
+  if (state.view === "projects") {
+    els.date.textContent = "СЕРВИСЫ И ПАНЕЛИ";
+    els.view.innerHTML = renderer.renderProjects(entry, { accessDeniedStatus: state.projectsAccessDeniedStatus });
+    return;
+  }
 
   if (state.view === "vpn") {
     els.date.textContent = "ПОДКЛЮЧЕНИЕ ЭТОГО УСТРОЙСТВА";
@@ -294,7 +311,7 @@ function navigate(view, { replace = false } = {}) {
 }
 
 function goBack() {
-  if (state.view === "vpn") navigate("profile", { replace: true });
+  if (state.view === "vpn") navigate("projects", { replace: true });
   else if (state.view === "help") navigate(state.previousView || "profile", { replace: true });
 }
 

@@ -37,6 +37,7 @@ jobs:
           node tests/test_mini_app_navigation.js
           node tests/test_mini_app_vpn.js
           node tests/test_mini_app_external_ip.js
+          node tests/test_mini_app_projects.js
       - name: Lint
         run: python -m ruff check bot tests deploy/deploy_vpn_panel.py
       - name: Tests

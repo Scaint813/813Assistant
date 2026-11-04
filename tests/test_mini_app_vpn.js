@@ -82,10 +82,11 @@ class FakeElement {
 async function flush() { await new Promise((resolve) => setImmediate(resolve)); }
 
 async function run() {
-  const { createViewRenderer } = await import("../bot/miniapp/views.mjs?v=6");
+  const { createViewRenderer } = await import("../bot/miniapp/views.mjs?v=7");
   const renderer = createViewRenderer({ getTimezone: () => "Europe/Moscow", periods: {} });
-  assert.match(renderer.renderProfile(profile()), /data-nav-view="vpn"/);
-  assert.doesNotMatch(renderer.renderProfile(profile(false)), /data-nav-view="vpn"/);
+  assert.match(renderer.renderProfile(profile()), /data-nav-view="projects"/);
+  assert.doesNotMatch(renderer.renderProfile(profile()), /data-nav-view="vpn"/);
+  assert.doesNotMatch(renderer.renderProfile(profile(false)), /data-nav-view="projects"/);
   const ready = renderer.renderVpn(entry());
   for (const pattern of [
     /vpn-route-card neutral/, /Подключение к VPS по Tailscale/, /внутренний адрес устройства в Tailscale/,
@@ -233,7 +234,7 @@ async function run() {
     "task-form", "setup-dialog", "setup-content", "toast", "offline-banner",
   ];
   const elements = Object.fromEntries(ids.map((id) => [id, new FakeElement()]));
-  const navItems = ["today", "planner", "tasks", "health", "profile"].map((view) => new FakeElement({ view }));
+  const navItems = ["today", "planner", "tasks", "health", "projects", "profile"].map((view) => new FakeElement({ view }));
   const listeners = {};
   const timers = [];
   const requests = [];
@@ -263,6 +264,7 @@ async function run() {
   global.setInterval = (callback, milliseconds) => { timers.push({ callback, milliseconds }); return { unref() {} }; };
   global.fetch = (path, options) => {
     if (path.startsWith("api/v1/state")) return Promise.resolve(response({ now: "2026-11-03T12:00:00Z", user: {}, timeline: [] }));
+    if (path === "api/v1/projects") return Promise.resolve(response({ projects: [{ id: "vpn", kind: "internal", view: "vpn", available: true }] }));
     const request = { path, options, ...deferred() };
     requests.push(request);
     return request.promise;
@@ -284,14 +286,17 @@ async function run() {
   await flush();
   requests.at(-1).resolve(response(profile()));
   await flush();
+  click({ navView: "projects" });
+  await flush();
+  assert.match(elements.view.innerHTML, /data-nav-view="vpn"/);
   click({ navView: "vpn" });
   await flush();
   assert.equal(elements["page-title"].textContent, "Мой VPN");
   assert.equal(vpnRequests().length, 1);
   assert.equal(latestVpn().options.headers.Authorization, "tma signed-telegram-init-data");
   assert.equal(backVisible, true);
-  assert.equal(navItems.find((item) => item.dataset.view === "profile").classNames.has("active"), true);
-  assert.equal(navItems.length, 5);
+  assert.equal(navItems.find((item) => item.dataset.view === "projects").classNames.has("active"), true);
+  assert.equal(navItems.length, 6);
   await checkExternal();
   assert.equal(externalRequests().length, 0, "an in-flight owner check cannot authorize third-party probes");
   await authorize();
@@ -425,7 +430,7 @@ async function run() {
   await authorize();
   assert.equal(externalRequests().length, beforeAuto, "periodic refresh never contacts third parties");
   telegramBack();
-  assert.equal(elements["page-title"].textContent, "Профиль");
+  assert.equal(elements["page-title"].textContent, "Мои проекты");
   assert.equal(backVisible, false);
   console.log("Mini App VPN tailnet, explicit per-family external checks, authorization and lifecycle checks passed.");
 }
