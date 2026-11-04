@@ -11,6 +11,7 @@ MODULE = "bot.services.vpn_status_service"
 EXPECTED_V4 = "89.22.228.86"
 EXPECTED_V6 = "2a0b:4140:5020::2"
 MAC_IP = "100.124.44.54"
+MAC_IPV6 = "fd7a:115c:a1e0::1234"
 
 
 def running_payload():
@@ -20,7 +21,7 @@ def running_payload():
         "Peer": {
             "selected-peer": {
                 "HostName": "my-mac",
-                "TailscaleIPs": [MAC_IP, "fd7a:115c:a1e0::1234"],
+                "TailscaleIPs": [MAC_IP, MAC_IPV6],
                 "Online": True,
                 "LastSeen": "2026-11-03T10:30:00Z",
                 "ExitNode": True,
@@ -126,6 +127,193 @@ class VpnRequestObservationTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIsNone(result["connection"]["observed_ip"])
                 self.assertEqual(result["connection"]["state"], "unknown")
                 self.assertEqual(result["connection"]["unverified_families"], [4, 6])
+
+    async def test_configured_tailnet_client_is_observed_without_verifying_public_exit(self):
+        service = VpnStatusService(
+            expected_ipv4=EXPECTED_V4,
+            expected_ipv6=EXPECTED_V6,
+            device_ips=(MAC_IP, MAC_IPV6),
+            trusted_proxy_cidrs=("127.0.0.1/32", "::1/128"),
+            client_ip_header="X-Forwarded-For",
+        )
+        for address, family in ((MAC_IP, 4), (MAC_IPV6, 6)):
+            for source in ("direct", "proxy"):
+                with self.subTest(address=address, source=source):
+                    result = await service.snapshot(
+                        remote_ip=address if source == "direct" else "127.0.0.1",
+                        headers={"X-Forwarded-For": f"1.1.1.1, {address}, ::1"},
+                    )
+                    connection = result["connection"]
+                    self.assertEqual(connection["state"], "via_tailnet")
+                    self.assertEqual(connection["observed_ip"], address)
+                    self.assertEqual(connection["family"], family)
+                    self.assertEqual(connection["source"], source)
+                    self.assertEqual(connection["unverified_families"], [4, 6])
+                    self.assertEqual(connection["checked_at"], result["checked_at"])
+
+    async def test_tailnet_device_matching_normalizes_ipv4_mapped_and_ipv6_addresses(self):
+        service = VpnStatusService(device_ips=(MAC_IP, "fd7a:115c:a1e0:0:0:0:0:1234"))
+        for remote, observed, family in (
+            (f"::ffff:{MAC_IP}", MAC_IP, 4),
+            ("FD7A:115C:A1E0:0:0:0:0:1234", MAC_IPV6, 6),
+        ):
+            with self.subTest(remote=remote):
+                result = await service.snapshot(remote_ip=remote, headers={})
+                self.assertEqual(result["connection"]["state"], "via_tailnet")
+                self.assertEqual(result["connection"]["observed_ip"], observed)
+                self.assertEqual(result["connection"]["family"], family)
+                self.assertEqual(result["connection"]["unverified_families"], [4, 6])
+
+    async def test_tailnet_observation_requires_configured_device_and_tailscale_range(self):
+        configured_private = (
+            "10.0.0.4",
+            "192.168.1.2",
+            "127.0.0.2",
+            "fd7a:115c:a1e1::1234",
+            "fd00::1",
+        )
+        service = VpnStatusService(
+            expected_ipv4=EXPECTED_V4,
+            expected_ipv6=EXPECTED_V6,
+            device_ips=(MAC_IP, MAC_IPV6, *configured_private),
+            trusted_proxy_cidrs=("127.0.0.1/32",),
+            client_ip_header="X-Forwarded-For",
+        )
+        for address in ("100.64.1.2", "fd7a:115c:a1e0::5678", *configured_private):
+            for remote, headers in (
+                (address, {}),
+                ("127.0.0.1", {"X-Forwarded-For": address}),
+            ):
+                with self.subTest(address=address, remote=remote):
+                    result = await service.snapshot(remote_ip=remote, headers=headers)
+                    connection = result["connection"]
+                    self.assertEqual(connection["state"], "unknown")
+                    self.assertIsNone(connection["observed_ip"])
+                    self.assertIsNone(connection["family"])
+                    self.assertEqual(connection["source"], "unknown")
+                    self.assertEqual(connection["unverified_families"], [4, 6])
+
+    async def test_tailnet_client_cannot_be_claimed_by_spoofed_forwarding_headers(self):
+        service = VpnStatusService(
+            expected_ipv4=EXPECTED_V4,
+            device_ips=(MAC_IP, MAC_IPV6),
+            trusted_proxy_cidrs=("127.0.0.1/32",),
+            client_ip_header="X-Forwarded-For",
+        )
+        for claimed in (MAC_IP, MAC_IPV6):
+            for remote, headers, observed, state in (
+                ("8.8.8.8", {"X-Forwarded-For": claimed}, "8.8.8.8", "other_route"),
+                ("192.168.1.2", {"X-Forwarded-For": claimed}, None, "unknown"),
+                (
+                    "127.0.0.1",
+                    {"X-Forwarded-For": f"{claimed}, 8.8.8.8"},
+                    "8.8.8.8",
+                    "other_route",
+                ),
+                (
+                    "127.0.0.1",
+                    {"X-Forwarded-For": f"{claimed}, 192.168.1.2"},
+                    None,
+                    "unknown",
+                ),
+                ("127.0.0.1", {"X-Real-IP": claimed}, None, "unknown"),
+            ):
+                with self.subTest(claimed=claimed, remote=remote, headers=headers):
+                    result = await service.snapshot(remote_ip=remote, headers=headers)
+                    self.assertEqual(result["connection"]["state"], state)
+                    self.assertEqual(result["connection"]["observed_ip"], observed)
+
+    async def test_tailnet_devices_in_trusted_proxy_networks_still_require_valid_headers(self):
+        service = VpnStatusService(
+            device_ips=(MAC_IP, MAC_IPV6),
+            trusted_proxy_cidrs=("100.64.0.0/10", "fd7a:115c:a1e0::/48", "127.0.0.1/32"),
+            client_ip_header="X-Forwarded-For",
+        )
+        for address in (MAC_IP, MAC_IPV6):
+            for remote, headers in (
+                (address, {}),
+                ("127.0.0.1", {"X-Forwarded-For": address}),
+            ):
+                with self.subTest(address=address, remote=remote):
+                    result = await service.snapshot(remote_ip=remote, headers=headers)
+                    self.assertEqual(result["connection"]["state"], "unknown")
+                    self.assertIsNone(result["connection"]["observed_ip"])
+
+    async def test_tailnet_client_does_not_bypass_forwarding_header_limits(self):
+        service = VpnStatusService(
+            device_ips=(MAC_IP,),
+            trusted_proxy_cidrs=("127.0.0.1/32",),
+            client_ip_header="X-Forwarded-For",
+        )
+        for headers in (
+            {"X-Forwarded-For": MAC_IP, "x-forwarded-for": MAC_IP},
+            {"X-Forwarded-For": ",".join([MAC_IP] * 33)},
+            {"X-Forwarded-For": " " * 2048 + MAC_IP},
+            {"X-Forwarded-For": f"{MAC_IP}\n"},
+            {"X-Forwarded-For": f"invalid, {MAC_IP}"},
+        ):
+            with self.subTest(headers=headers):
+                result = await service.snapshot(remote_ip="127.0.0.1", headers=headers)
+                self.assertEqual(result["connection"]["state"], "unknown")
+                self.assertIsNone(result["connection"]["observed_ip"])
+
+    async def test_single_ip_headers_can_observe_only_configured_tailnet_clients(self):
+        for header in ("CF-Connecting-IP", "X-Real-IP"):
+            service = VpnStatusService(
+                device_ips=(MAC_IP, MAC_IPV6),
+                trusted_proxy_cidrs=("127.0.0.1/32",),
+                client_ip_header=header,
+            )
+            for address, expected_state in (
+                (MAC_IP, "via_tailnet"),
+                (MAC_IPV6, "via_tailnet"),
+                ("100.64.1.2", "unknown"),
+            ):
+                with self.subTest(header=header, address=address):
+                    result = await service.snapshot(
+                        remote_ip="127.0.0.1", headers={header: address}
+                    )
+                    self.assertEqual(result["connection"]["state"], expected_state)
+                    self.assertEqual(result["connection"]["unverified_families"], [4, 6])
+                    if expected_state == "via_tailnet":
+                        self.assertEqual(result["connection"]["observed_ip"], address)
+                        self.assertEqual(result["connection"]["source"], "proxy")
+
+    async def test_configured_public_devices_retain_public_route_classification(self):
+        service = VpnStatusService(
+            expected_ipv4=EXPECTED_V4,
+            expected_ipv6=EXPECTED_V6,
+            device_ips=(
+                EXPECTED_V4,
+                EXPECTED_V6,
+                "8.8.8.8",
+                "2606:4700:4700::1111",
+                "100.63.255.255",
+                "100.128.0.1",
+            ),
+            trusted_proxy_cidrs=("127.0.0.1/32",),
+            client_ip_header="X-Forwarded-For",
+        )
+        for address, family, state in (
+            (EXPECTED_V4, 4, "via_vps"),
+            (EXPECTED_V6, 6, "via_vps"),
+            ("8.8.8.8", 4, "other_route"),
+            ("2606:4700:4700::1111", 6, "other_route"),
+            ("100.63.255.255", 4, "other_route"),
+            ("100.128.0.1", 4, "other_route"),
+        ):
+            for source in ("direct", "proxy"):
+                with self.subTest(address=address, source=source):
+                    result = await service.snapshot(
+                        remote_ip=address if source == "direct" else "127.0.0.1",
+                        headers={"X-Forwarded-For": address},
+                    )
+                    connection = result["connection"]
+                    self.assertEqual(connection["state"], state)
+                    self.assertEqual(connection["observed_ip"], address)
+                    self.assertEqual(connection["family"], family)
+                    self.assertEqual(connection["source"], source)
+                    self.assertEqual(connection["unverified_families"], [6 if family == 4 else 4])
 
     async def test_single_header_requires_trusted_transport_and_one_public_ip(self):
         service = VpnStatusService(

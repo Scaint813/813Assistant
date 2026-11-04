@@ -36,6 +36,7 @@ from bot.services.mini_app_server import (
 from bot.services.time_service import TimeService
 from bot.services.training_service import TrainingService
 from bot.services.user_profile_service import UserProfileService
+from bot.services.vpn_status_service import VpnStatusService
 
 CALENDAR_TOKEN = "calendar-secret-calendar-secret-1234"
 HEALTH_TOKEN = "health-secret-health-secret-health-1234"
@@ -167,9 +168,25 @@ class MiniAppAPITests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("assets/app.mjs", html)
         self.assertIn("https://telegram.org/js/telegram-web-app.js", html)
         self.assertIn("frame-ancestors", response.headers["Content-Security-Policy"])
+        self.assertIn(
+            "connect-src 'self' https://api.ipify.org https://api6.ipify.org;",
+            response.headers["Content-Security-Policy"],
+        )
 
         resource_response = await self.client.get("/assets/resource_store.mjs")
         self.assertEqual(200, resource_response.status)
+
+    async def test_external_ip_module_is_served_with_narrow_csp(self):
+        response = await self.client.get("/assets/external_ip.mjs")
+        self.assertEqual(200, response.status)
+        self.assertIn("probeExternalIp", await response.text())
+        policy = response.headers["Content-Security-Policy"]
+        connections = policy.split("connect-src ", 1)[1].split(";", 1)[0]
+        self.assertEqual(
+            "'self' https://api.ipify.org https://api6.ipify.org", connections,
+        )
+        unknown = await self.client.get("/assets/not-allowed.mjs")
+        self.assertEqual(404, unknown.status)
 
     async def test_empty_today_is_a_successful_ready_state(self):
         response = await self.client.get(
@@ -253,6 +270,26 @@ class MiniAppAPITests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue((await response.json())["enabled"])
         snapshot.assert_awaited_once()
         self.assertEqual("127.0.0.1", snapshot.await_args.kwargs["remote_ip"])
+
+    async def test_vpn_request_from_known_tailnet_device_is_not_public_egress_proof(self):
+        self.service.vpn_status_service = VpnStatusService(
+            device_ips=("100.124.44.54",),
+            expected_ipv4="89.22.228.86",
+            client_ip_header="X-Forwarded-For",
+            trusted_proxy_cidrs=("127.0.0.1/32",),
+        )
+        auth = signed_init_data("123:secret", 42, int(time_module.time()))
+        response = await self.client.get("/api/v1/vpn", headers={
+            "Authorization": f"tma {auth}",
+            "X-Forwarded-For": "100.124.44.54",
+        })
+        connection = (await response.json())["connection"]
+        self.assertEqual(200, response.status)
+        self.assertEqual("no-store", response.headers["Cache-Control"])
+        self.assertEqual("via_tailnet", connection["state"])
+        self.assertEqual("100.124.44.54", connection["observed_ip"])
+        self.assertEqual("proxy", connection["source"])
+        self.assertEqual([4, 6], connection["unverified_families"])
 
     async def test_vpn_status_rejects_missing_tampered_and_expired_auth(self):
         snapshot = AsyncMock()

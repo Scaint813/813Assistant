@@ -28,6 +28,7 @@ jobs:
         run: |
           node --check bot/miniapp/api_client.mjs
           node --check bot/miniapp/app.mjs
+          node --check bot/miniapp/external_ip.mjs
           node --check bot/miniapp/faq.mjs
           node --check bot/miniapp/formatters.mjs
           node --check bot/miniapp/resource_store.mjs
@@ -35,6 +36,7 @@ jobs:
           node tests/test_mini_app_resource_store.js
           node tests/test_mini_app_navigation.js
           node tests/test_mini_app_vpn.js
+          node tests/test_mini_app_external_ip.js
       - name: Lint
         run: python -m ruff check bot tests deploy/deploy_vpn_panel.py
       - name: Tests

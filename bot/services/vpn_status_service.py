@@ -15,6 +15,10 @@ _MAX_STATUS_BYTES = 256 * 1024
 _PROBE_TIMEOUT = 2.0
 _CACHE_SECONDS = 10.0
 _HEADERS = {"cf-connecting-ip", "x-real-ip", "x-forwarded-for"}
+_TAILNET_NETWORKS = (
+    ipaddress.ip_network("100.64.0.0/10"),
+    ipaddress.ip_network("fd7a:115c:a1e0::/48"),
+)
 _STATES = {
     "Running": "running",
     "Stopped": "stopped",
@@ -168,12 +172,20 @@ class VpnStatusService:
             for network in self._trusted_proxies
         )
 
+    def _tailnet_device(self, address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+        return str(address) in self.device_ips and any(
+            address.version == network.version and address in network
+            for network in _TAILNET_NETWORKS
+        )
+
     def _observed_ip(self, remote_ip: str | None, headers: Mapping) -> tuple[str | None, str]:
         remote = _address(remote_ip)
         if remote is None:
             return None, "unknown"
         if not self._trusted(remote):
-            return (str(remote), "direct") if _is_public(remote) else (None, "unknown")
+            if _is_public(remote) or self._tailnet_device(remote):
+                return str(remote), "direct"
+            return None, "unknown"
         if not self.client_ip_header:
             return None, "unknown"
         values = [
@@ -200,7 +212,7 @@ class VpnStatusService:
                 return None, "unknown"
         else:
             candidate = _address(raw)
-        if candidate is None or not _is_public(candidate):
+        if candidate is None or not (_is_public(candidate) or self._tailnet_device(candidate)):
             return None, "unknown"
         return str(candidate), "proxy"
 
@@ -210,7 +222,9 @@ class VpnStatusService:
         family = address.version if address else None
         expected = self.expected_ipv4 if family == 4 else self.expected_ipv6
         state = "unknown"
-        if observed is not None and expected:
+        if address is not None and self._tailnet_device(address):
+            state = "via_tailnet"
+        elif observed is not None and expected:
             state = "via_vps" if observed == expected else "other_route"
         return {
             "state": state,
@@ -219,7 +233,9 @@ class VpnStatusService:
             "source": source,
             "checked_at": checked_at,
             "unverified_families": (
-                [4, 6] if state == "unknown" else [value for value in (4, 6) if value != family]
+                [4, 6]
+                if state in {"unknown", "via_tailnet"}
+                else [value for value in (4, 6) if value != family]
             ),
         }
 

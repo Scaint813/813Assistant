@@ -6,6 +6,7 @@ import {
   sleepValue,
 } from "./formatters.mjs";
 import { FAQ_ITEMS } from "./faq.mjs";
+import { normalizePublicIp } from "./external_ip.mjs";
 
 export function createViewRenderer({ getTimezone, periods }) {
   const { dateKey, formatDate, formatTime } = createDateFormatters(getTimezone);
@@ -214,14 +215,56 @@ export function createViewRenderer({ getTimezone, periods }) {
   function vpnInstructionsHTML(name) {
     const exitName = escapeHTML(name || "свой VPS");
     return `<details class="vpn-instructions profile-card"><summary>Как включать VPN на Mac</summary><div class="vpn-instructions-content">
-      <ol><li>Нажми значок Tailscale в верхней строке macOS и выбери Connect.</li><li>В меню Exit Nodes выбери <strong>${exitName}</strong>.</li><li>Вернись сюда и нажми «Проверить IP». Для отключения используй Disconnect в Tailscale.</li></ol>
+      <ol><li>Нажми значок Tailscale в верхней строке macOS и выбери Connect.</li><li>В меню Exit Nodes выбери <strong>${exitName}</strong>.</li><li>Вернись сюда и нажми «Проверить внешний IP». Для отключения используй Disconnect в Tailscale.</li></ol>
       <p>Для запуска при входе: «Системные настройки → Основные → Объекты входа и расширения → Открывать при входе → + → Tailscale».</p>
       <p>Миниапп проверяет соединение, но не переключает системный VPN. Автозапуск приложения не подтверждает блокировку интернета при обрыве VPN.</p>
       <a class="secondary-button vpn-admin-link" href="https://login.tailscale.com/admin/machines" target="_blank" rel="noopener noreferrer">Устройства в Tailscale ↗</a>
     </div></details>`;
   }
 
-  function renderVpn(entry, { needsCheck = false, accessDeniedStatus = null } = {}) {
+  function externalIpHTML(external, exit, { fresh, checkEnabled }) {
+    const loading = [4, 6].some((family) => external[family]?.status === "loading");
+    const families = [4, 6].map((family) => {
+      const result = external[family] || { status: "idle" };
+      const observed = normalizePublicIp(result.observed_ip, family);
+      const expected = normalizePublicIp(exit[`expected_ipv${family}`], family);
+      const stale = result.status === "stale" || (result.status === "complete"
+        && (!fresh || !Number.isFinite(result.updatedAt) || Date.now() - result.updatedAt > 45_000));
+      let tone = "neutral";
+      let label = "Не проверен";
+      let detail = "Нажми кнопку ниже, чтобы узнать внешний адрес этого устройства.";
+      if (result.status === "loading" && fresh) {
+        label = "Проверяем…";
+        detail = "Ждём ответ внешнего сервиса.";
+      } else if (stale || result.status === "loading") {
+        label = "Нужна новая проверка";
+        detail = "Предыдущий результат не подтверждает текущий маршрут.";
+      } else if (result.status === "complete") {
+        if (result.error || !observed) {
+          label = result.error === "invalid_response" || (!result.error && !observed)
+            ? "Некорректный ответ сервиса" : "Проверка недоступна";
+          detail = "Маршрут неизвестен. Это не означает, что VPN выключен.";
+        } else if (!expected) {
+          label = "Ожидаемый адрес не настроен";
+          detail = "Внешний IP получен; сравнить его с адресом VPS пока нельзя.";
+        } else if (observed === expected) {
+          label = "Совпадает с VPS";
+          tone = "good";
+          detail = `Внешний IPv${family} совпал с настроенным адресом выхода VPS.`;
+        } else {
+          label = "Другой адрес";
+          tone = "warning";
+          detail = `Внешний IPv${family} не совпал с настроенным адресом выхода VPS.`;
+        }
+      }
+      return `<article class="vpn-external-family ${tone}" data-vpn-external-family="${family}"><div class="vpn-device-heading"><h3>IPv${family}</h3><span class="status-badge">${label}</span></div><p>${detail}</p>${observed ? `<dl class="vpn-facts"><div><dt>${stale ? "Последний IP" : "Внешний IP"}</dt><dd>${escapeHTML(observed)}</dd></div><div><dt>Проверено</dt><dd>${escapeHTML(vpnTimestamp(result.checked_at))}</dd></div></dl>` : ""}</article>`;
+    }).join("");
+    return `<section class="profile-card vpn-card vpn-external-card" aria-live="polite" aria-busy="${loading && fresh}"><h2>Внешний IP этого устройства</h2><p>IPv4 и IPv6 проверяются отдельно. Результат получает браузер от внешнего сервиса; сервер его не подтверждает.</p><div class="vpn-external-families">${families}</div><p class="vpn-note">По нажатию запросы к api.ipify.org и api6.ipify.org; сервисы увидят ваш IP. Telegram-авторизация не передаётся.</p><button class="primary-button full-width" type="button" data-vpn-check-external ${!checkEnabled || loading ? "disabled" : ""}>${loading && fresh ? "Проверяем внешний IP…" : "Проверить внешний IP"}</button>${!checkEnabled ? '<p class="vpn-note">Сначала обнови подключение к серверу.</p>' : ""}</section>`;
+  }
+
+  function renderVpn(entry, {
+    needsCheck = false, accessDeniedStatus = null, external = {}, externalCheckEnabled = false,
+  } = {}) {
     const intro = `<section class="vpn-intro"><button class="back-link" type="button" data-back>← Профиль</button><p>Проверка относится к устройству, на котором открыт миниапп. На телефоне она не проверяет маршрут Mac.</p></section>`;
     const deniedStatus = accessDeniedStatus || entry.error?.status;
     if (deniedStatus === 403) {
@@ -236,17 +279,18 @@ export function createViewRenderer({ getTimezone, periods }) {
     const data = entry.data;
     const exit = data.exit_node || {};
     if (!data.enabled) {
-      return `${intro}<section class="profile-card vpn-card"><h2>Панель VPN ещё не настроена</h2><p>Данные сервера и проверка маршрута появятся после подключения панели владельцем.</p><button class="secondary-button" type="button" data-retry-current ${entry.loading ? "disabled" : ""}>Обновить</button></section>${vpnInstructionsHTML(exit.name)}`;
+      return `${intro}<section class="profile-card vpn-card"><h2>Панель VPN ещё не настроена</h2><p>Данные сервера и проверка маршрута появятся после подключения панели владельцем.</p><button class="secondary-button" type="button" data-retry-current ${entry.loading ? "disabled" : ""}>Обновить подключение</button></section>${vpnInstructionsHTML(exit.name)}`;
     }
     const connection = data.connection || {};
     const fresh = !needsCheck && !entry.loading && !entry.error;
     const observedFamily = [4, 6].includes(connection.family) ? connection.family : null;
     const routeState = fresh && observedFamily && connection.observed_ip
-        && ["via_vps", "other_route"].includes(connection.state)
+        && ["via_vps", "via_tailnet", "other_route"].includes(connection.state)
       ? connection.state
       : "unknown";
     const route = {
       via_vps: { tone: "good", title: "Этот запрос идёт через VPS", text: `Подтверждён маршрут IPv${observedFamily} для запроса из миниаппа.` },
+      via_tailnet: { tone: "neutral", title: "Подключение к VPS по Tailscale", text: "Сервер видит внутренний адрес устройства в Tailscale. Это подтверждает подключение к VPS, но не внешний IP для выхода в интернет." },
       other_route: { tone: "warning", title: "Этот запрос пришёл другим маршрутом", text: "Полученный IP не совпал с настроенным адресом VPS для этого семейства." },
       unknown: { tone: "neutral", title: "Маршрут не подтверждён", text: "Не удалось подтвердить внешний IP этого запроса. Это не означает, что VPN выключен." },
     }[routeState] || { tone: "neutral", title: "Маршрут не подтверждён", text: "Для этого соединения нет подтверждённых данных." };
@@ -257,10 +301,12 @@ export function createViewRenderer({ getTimezone, periods }) {
       route.title = "Не удалось обновить проверку";
       route.text = "Ниже сохранён предыдущий снимок. Обнови проверку, когда соединение восстановится.";
     } else if (needsCheck) {
-      route.text = "Результат мог измениться. Нажми «Проверить IP», чтобы получить новый снимок соединения.";
+      route.text = "Результат мог измениться. Нажми «Обновить подключение», чтобы получить новый снимок соединения.";
     }
     const checkedAt = connection.checked_at || data.checked_at;
-    const familyNote = observedFamily && fresh
+    const familyNote = routeState === "via_tailnet"
+      ? "Внешние IPv4 и IPv6 этим запросом не проверены."
+      : observedFamily && fresh
       ? `IPv${observedFamily === 4 ? 6 : 4} этим запросом не проверен.`
       : "IPv4 и IPv6 требуют отдельных проверок.";
     const server = data.server || {};
@@ -286,7 +332,8 @@ export function createViewRenderer({ getTimezone, periods }) {
       ? `${countryNames[exit.country_code] || exit.country_code} (${exit.country_code})`
       : "Не указана";
 
-    return `${intro}<section class="vpn-route-card ${route.tone}" aria-live="polite" aria-busy="${Boolean(entry.loading)}"><span class="vpn-eyebrow">Запрос с этого устройства</span><h2>${escapeHTML(route.title)}</h2><p>${escapeHTML(route.text)}</p><dl class="vpn-facts"><div><dt>${fresh ? "Полученный IP" : "IP последней проверки"}</dt><dd>${escapeHTML(connection.observed_ip || "Нет данных")}</dd></div><div><dt>Проверено</dt><dd>${escapeHTML(vpnTimestamp(checkedAt))}</dd></div></dl><p class="vpn-note">${familyNote}</p><button class="primary-button full-width" type="button" data-retry-current ${entry.loading ? "disabled" : ""}>${entry.loading ? "Проверяем…" : "Проверить IP"}</button></section>
+    return `${intro}<section class="vpn-route-card ${route.tone}" aria-live="polite" aria-busy="${Boolean(entry.loading)}"><span class="vpn-eyebrow">Запрос с этого устройства</span><h2>${escapeHTML(route.title)}</h2><p>${escapeHTML(route.text)}</p><dl class="vpn-facts"><div><dt>${fresh ? "Полученный IP" : "IP последней проверки"}</dt><dd>${escapeHTML(connection.observed_ip || "Нет данных")}</dd></div><div><dt>Проверено</dt><dd>${escapeHTML(vpnTimestamp(checkedAt))}</dd></div></dl><p class="vpn-note">${familyNote}</p><button class="primary-button full-width" type="button" data-retry-current ${entry.loading ? "disabled" : ""}>${entry.loading ? "Проверяем…" : "Обновить подключение"}</button></section>
+      ${externalIpHTML(external, exit, { fresh, checkEnabled: externalCheckEnabled && fresh })}
       <section class="profile-card vpn-card"><h2>Сервер Tailscale</h2><p class="vpn-server-state">${escapeHTML(serverTitle)}</p><dl class="vpn-facts"><div><dt>Выходной узел</dt><dd>${escapeHTML(exit.name || "Не указан")}</dd></div>${server.name ? `<div><dt>Проверяемый узел</dt><dd>${escapeHTML(server.name)}</dd></div>` : ""}<div><dt>Устройство сервера</dt><dd>${fresh ? availability(server.online) : "Нет свежих данных"}</dd></div><div><dt>Exit Node</dt><dd>${fresh ? availableExit(server.exit_node_available) : "Нет свежих данных"}</dd></div><div><dt>Проверка сервера</dt><dd>${escapeHTML(vpnTimestamp(server.checked_at))}</dd></div></dl>${server.matches_expected === false ? '<p class="vpn-note">Проверяемый узел не совпадает с настроенным Exit Node. Состояние выбранного VPS неизвестно.</p>' : ""}<p class="vpn-note">Работа сервера не подтверждает маршрут интернета на твоих устройствах.</p></section>
       <section class="profile-card vpn-card"><h2>Адрес выхода</h2><dl class="vpn-facts"><div><dt>Ожидаемый IPv4</dt><dd>${escapeHTML(exit.expected_ipv4 || "Не настроен")}</dd></div><div><dt>Ожидаемый IPv6</dt><dd>${escapeHTML(exit.expected_ipv6 || "Не настроен")}</dd></div><div><dt>Страна в настройках</dt><dd>${escapeHTML(configuredCountry)}</dd></div></dl><p class="vpn-note">Геолокация не проверяется автоматически. Закрепление IP у хостера не проверено.</p></section>
       <section class="profile-card vpn-card"><h2>Устройства</h2>${deviceRows ? `<ul class="vpn-device-list">${deviceRows}</ul>` : '<p>Устройства для наблюдения пока не указаны.</p>'}<p class="vpn-note">Отсутствие связи может означать сон устройства. Доступность в Tailscale не подтверждает использование VPN для интернета.</p></section>

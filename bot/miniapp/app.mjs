@@ -1,6 +1,7 @@
 import { ApiClient, initializeTelegram } from "./api_client.mjs";
 import { ResourceStore } from "./resource_store.mjs";
-import { createViewRenderer } from "./views.mjs?v=3";
+import { createViewRenderer } from "./views.mjs?v=5";
+import { probeExternalIp } from "./external_ip.mjs";
 
 const telegram = window.Telegram?.WebApp;
 const VIEW_NAMES = new Set(["today", "planner", "tasks", "health", "profile", "help", "vpn"]);
@@ -37,7 +38,27 @@ const state = {
   timezone: undefined,
   vpnNeedsCheck: true,
   vpnAccessDeniedStatus: null,
+  vpnExternal: { 4: { status: "idle" }, 6: { status: "idle" } },
 };
+let externalGeneration = 0;
+let externalController = null;
+let externalExpectedSignature = null;
+
+function invalidateExternalIp({ clear = false } = {}) {
+  externalGeneration += 1;
+  externalController?.abort();
+  externalController = null;
+  for (const family of [4, 6]) {
+    const previous = state.vpnExternal[family];
+    state.vpnExternal[family] = clear || previous.status === "idle"
+      ? { status: "idle" }
+      : { ...previous, status: "stale" };
+  }
+}
+
+function expectedIpSignature(data) {
+  return JSON.stringify([data?.exit_node?.expected_ipv4 || null, data?.exit_node?.expected_ipv6 || null]);
+}
 
 const els = {
   view: document.querySelector("#view"),
@@ -87,9 +108,15 @@ const resources = new ResourceStore(loadResource, (key, entry) => {
   if (key === "vpn") {
     if ([401, 403].includes(entry.error?.status)) {
       state.vpnAccessDeniedStatus = entry.error.status;
+      invalidateExternalIp({ clear: true });
+    } else if (entry.loading) {
+      invalidateExternalIp();
     } else if (entry.data !== null && !entry.loading && !entry.error) {
+      const signature = expectedIpSignature(entry.data);
+      if (signature !== externalExpectedSignature) invalidateExternalIp();
+      externalExpectedSignature = signature;
       state.vpnAccessDeniedStatus = null;
-      if (document.visibilityState !== "hidden") state.vpnNeedsCheck = false;
+      if (document.visibilityState !== "hidden" && navigator.onLine !== false) state.vpnNeedsCheck = false;
     }
   }
   if (key === currentResourceKey()) render();
@@ -133,8 +160,11 @@ function render() {
   if (state.view === "vpn") {
     els.date.textContent = "ПОДКЛЮЧЕНИЕ ЭТОГО УСТРОЙСТВА";
     els.view.innerHTML = renderer.renderVpn(entry, {
-      needsCheck: state.vpnNeedsCheck || navigator.onLine === false,
+      needsCheck: state.vpnNeedsCheck || navigator.onLine === false
+        || (entry.data !== null && Date.now() - entry.updatedAt > STALE_AFTER_MS),
       accessDeniedStatus: state.vpnAccessDeniedStatus,
+      external: state.vpnExternal,
+      externalCheckEnabled: canCheckExternalIp(),
     });
     return;
   }
@@ -199,6 +229,38 @@ function refreshCurrent(force = false) {
   loadCurrent(force).catch(() => {});
 }
 
+function canCheckExternalIp() {
+  const entry = resources.get("vpn");
+  return state.view === "vpn" && document.visibilityState !== "hidden"
+    && navigator.onLine !== false && !state.vpnAccessDeniedStatus
+    && !state.vpnNeedsCheck && entry.data?.enabled === true
+    && !entry.loading && !entry.error && Date.now() - entry.updatedAt <= STALE_AFTER_MS;
+}
+
+async function checkExternalIp() {
+  if (!canCheckExternalIp()) return;
+  invalidateExternalIp({ clear: true });
+  const generation = externalGeneration;
+  const signature = expectedIpSignature(resources.get("vpn").data);
+  const controller = new AbortController();
+  externalController = controller;
+  state.vpnExternal = { 4: { status: "loading" }, 6: { status: "loading" } };
+  render();
+  await Promise.all([4, 6].map(async (family) => {
+    let result;
+    try {
+      result = await probeExternalIp(family, { signal: controller.signal });
+    } catch (_error) {
+      result = { family, observed_ip: null, checked_at: null, provider: null, error: "unavailable" };
+    }
+    if (generation !== externalGeneration || controller.signal.aborted || !canCheckExternalIp()
+        || signature !== expectedIpSignature(resources.get("vpn").data)) return;
+    state.vpnExternal[family] = { ...result, status: "complete", updatedAt: Date.now() };
+    render();
+  }));
+  if (generation === externalGeneration) externalController = null;
+}
+
 function ensureCurrent() {
   const key = currentResourceKey();
   if (!key) return;
@@ -213,6 +275,7 @@ function ensureCurrent() {
 
 function navigate(view, { replace = false } = {}) {
   if (!VIEW_NAMES.has(view)) return;
+  if (state.view === "vpn" && view !== "vpn") invalidateExternalIp();
   if (view !== "help") state.previousView = state.view === "help" ? state.previousView : state.view;
   else if (state.view !== "help") state.previousView = state.view;
   state.view = view;
@@ -397,7 +460,8 @@ document.addEventListener("click", (event) => {
     state.period = target.dataset.period;
     render();
     refreshCurrent(false);
-  } else if (target.hasAttribute("data-retry-current")) refreshCurrent(true);
+  } else if (target.hasAttribute("data-vpn-check-external")) checkExternalIp();
+  else if (target.hasAttribute("data-retry-current")) refreshCurrent(true);
   else if (target.dataset.taskAction) mutateTask(target);
   else if (target.dataset.connection) showConnection(target.dataset.connection, target);
   else if (target.dataset.copyInput) copyInput(target.dataset.copyInput);
@@ -455,6 +519,7 @@ els.add.addEventListener("click", openTaskDialog);
 telegram?.BackButton?.onClick?.(goBack);
 
 window.addEventListener?.("popstate", () => {
+  if (state.view === "vpn") invalidateExternalIp();
   const view = (window.location.hash || "").replace(/^#/, "");
   state.view = VIEW_NAMES.has(view) ? view : "today";
   if (state.view === "vpn") state.vpnNeedsCheck = true;
@@ -463,6 +528,7 @@ window.addEventListener?.("popstate", () => {
 });
 document.addEventListener("visibilitychange", () => {
   if (state.view === "vpn") {
+    invalidateExternalIp();
     state.vpnNeedsCheck = true;
     render();
   }
@@ -475,6 +541,7 @@ window.addEventListener?.("online", () => {
 window.addEventListener?.("offline", () => {
   els.offline?.classList.remove("hidden");
   if (state.view === "vpn") {
+    invalidateExternalIp();
     state.vpnNeedsCheck = true;
     render();
   }
@@ -495,10 +562,20 @@ refreshTimer.unref?.();
 const vpnFreshnessTimer = setInterval(() => {
   if (state.view !== "vpn" || document.visibilityState !== "visible") return;
   const entry = resources.get("vpn");
+  let changed = false;
   if (!state.vpnNeedsCheck && entry.data !== null && !entry.loading
       && Date.now() - entry.updatedAt > STALE_AFTER_MS) {
     state.vpnNeedsCheck = true;
-    render();
+    invalidateExternalIp();
+    changed = true;
   }
+  for (const family of [4, 6]) {
+    const result = state.vpnExternal[family];
+    if (result.status === "complete" && Date.now() - result.updatedAt > STALE_AFTER_MS) {
+      state.vpnExternal[family] = { ...result, status: "stale" };
+      changed = true;
+    }
+  }
+  if (changed) render();
 }, 5_000);
 vpnFreshnessTimer.unref?.();

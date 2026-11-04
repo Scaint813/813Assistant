@@ -302,6 +302,7 @@ class MiniAppServer:
             "api_client.mjs",
             "app.css",
             "app.mjs",
+            "external_ip.mjs",
             "faq.mjs",
             "formatters.mjs",
             "resource_store.mjs",
@@ -319,7 +320,8 @@ class MiniAppServer:
     def _secure_static_headers(response: web.StreamResponse) -> None:
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; script-src 'self' https://telegram.org; "
-            "style-src 'self'; img-src 'self' data: https:; connect-src 'self'; "
+            "style-src 'self'; img-src 'self' data: https:; "
+            "connect-src 'self' https://api.ipify.org https://api6.ipify.org; "
             "object-src 'none'; base-uri 'self'; form-action 'self'; "
             "frame-ancestors https://web.telegram.org "
             "https://*.telegram.org"

@@ -199,6 +199,16 @@ button.glance-card { cursor: pointer; }
 .vpn-facts dd { margin: 0; overflow-wrap: anywhere; font-size: 12px; text-align: right; }
 .vpn-card .vpn-note, .vpn-route-card .vpn-note { margin: 10px 0 0; font-size: 10px; }
 .vpn-route-card .primary-button { margin-top: 15px; }
+.vpn-external-card .primary-button { margin-top: 15px; }
+.vpn-external-families { display: grid; gap: 12px; margin-top: 16px; }
+.vpn-external-family { padding: 12px; border: 1px solid var(--border); border-left: 3px solid var(--muted); border-radius: 12px; }
+.vpn-external-family.good { border-left-color: var(--success); }
+.vpn-external-family.warning { border-left-color: var(--warning); }
+.vpn-external-family h3 { margin: 0; font-size: 13px; }
+.vpn-external-family .vpn-device-heading { align-items: center; flex-wrap: wrap; }
+.vpn-external-family .status-badge { max-width: 100%; white-space: normal; }
+.vpn-external-family > p { margin: 8px 0 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
+.vpn-external-family .vpn-facts { margin-bottom: 0; }
 .vpn-server-state { margin: 0; font-weight: 650; }
 .vpn-device-list { margin: 0; padding: 0; list-style: none; }
 .vpn-device + .vpn-device { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border); }
