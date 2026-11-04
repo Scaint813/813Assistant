@@ -71,6 +71,44 @@ class VpnDeploymentTests(unittest.TestCase):
         with self.assertRaises(deploy.DeployError):
             deploy.render_env(b'BOT_TOKEN="unterminated\n')
 
+    def test_projects_url_update_preserves_proxy_settings_and_other_values(self):
+        original = (
+            b"PROJECT_813SPAM_URL=https://old.example.test/\n"
+            b"VPN_CLIENT_IP_HEADER=X-Forwarded-For\n"
+            b"VPN_TRUSTED_PROXY_CIDRS=127.0.0.1/32\n"
+            b'UNKNOWN="unchanged\\nvalue"\n'
+        )
+        rendered = deploy.render_env(original)
+        self.assertIn(b"PROJECT_813SPAM_URL=https://813spam.89.22.228.86.sslip.io/\n", rendered)
+        self.assertIn(b"VPN_CLIENT_IP_HEADER=X-Forwarded-For\n", rendered)
+        self.assertIn(b"VPN_TRUSTED_PROXY_CIDRS=127.0.0.1/32\n", rendered)
+        self.assertIn(b'UNKNOWN="unchanged\\nvalue"\n', rendered)
+        with patch.dict(os.environ, {}, clear=True):
+            deploy.guard_env_values(original, rendered)
+
+    def test_unknown_values_interpolating_the_project_url_cannot_change(self):
+        original = b"PROJECT_813SPAM_URL=https://old.example.test/\nUNKNOWN=${PROJECT_813SPAM_URL}\n"
+        with patch.dict(os.environ, {}, clear=True), self.assertRaises(deploy.DeployError):
+            deploy.guard_env_values(original, deploy.render_env(original))
+
+    def test_projects_readiness_requires_exact_url_and_no_fake_automatic_login(self):
+        url = deploy.UPDATES["PROJECT_813SPAM_URL"]
+        project = {
+            "id": "813spam", "kind": "external", "available": True,
+            "url": url, "automatic_login_available": False,
+        }
+        self.assertTrue(deploy.projects_payload_valid({"projects": [project]}, url))
+        for payload in (
+            None, {}, {"projects": None}, {"projects": []},
+            {"projects": [project, project]},
+            {"projects": [{**project, "url": "https://other.example.test/"}]},
+            {"projects": [{**project, "available": False}]},
+            {"projects": [{**project, "automatic_login_available": True}]},
+            {"projects": [{**project, "kind": "internal"}]},
+        ):
+            with self.subTest(payload=payload):
+                self.assertFalse(deploy.projects_payload_valid(payload, url))
+
     def test_duplicate_vpn_keys_are_all_updated(self):
         rendered = deploy.render_env(b"VPN_PANEL_ENABLED=false\nVPN_PANEL_ENABLED=false\n")
         self.assertEqual(rendered.count(b"VPN_PANEL_ENABLED=true\n"), 2)

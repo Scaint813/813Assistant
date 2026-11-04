@@ -40,6 +40,7 @@ UPDATES = {
     "VPN_EXPECTED_IPV6": "2a0b:4140:5020::2",
     "VPN_DEVICE_IPS": "100.124.44.54",
     "VPN_COUNTRY_CODE": "FI",
+    "PROJECT_813SPAM_URL": "https://813spam.89.22.228.86.sslip.io/",
 }
 SAFE_ENV = {"PATH", "LANG", "LC_ALL", "LC_CTYPE", "PYTHONUNBUFFERED", "PYTHONDONTWRITEBYTECODE"}
 HOOKS = ("ExecStartPre", "ExecStartPost", "ExecStop", "ExecStopPost", "ExecCondition")
@@ -267,6 +268,21 @@ def health_payload_valid(profile, vpn):
     )
 
 
+def projects_payload_valid(payload, expected_url):
+    if not isinstance(payload, dict) or not isinstance(payload.get("projects"), list):
+        return False
+    matches = [
+        item for item in payload["projects"]
+        if isinstance(item, dict) and item.get("id") == "813spam"
+    ]
+    return len(matches) == 1 and (
+        matches[0].get("kind") == "external"
+        and matches[0].get("available") is True
+        and matches[0].get("url") == expected_url
+        and matches[0].get("automatic_login_available") is False
+    )
+
+
 def check_api(config):
     fields = {"auth_date": str(int(time.time())), "user": json.dumps({"id": config.allowed_user_id}, separators=(",", ":"))}
     secret = hmac.new(b"WebAppData", config.bot_token.encode(), hashlib.sha256).digest()
@@ -282,8 +298,13 @@ def check_api(config):
                 raise DeployError("Local API readiness failed.")
             return json.loads(raw)
 
-    if get("/healthz") != {"status": "ok"} or not health_payload_valid(get("/api/v1/profile"), get("/api/v1/vpn")):
+    profile = get("/api/v1/profile")
+    if get("/healthz") != {"status": "ok"} or not health_payload_valid(profile, get("/api/v1/vpn")):
         raise DeployError("Owner VPN API readiness failed.")
+    if profile.get("projects_available") is not True or not projects_payload_valid(
+        get("/api/v1/projects"), config.project_813spam_url,
+    ):
+        raise DeployError("Owner Projects API readiness failed.")
 
 
 def worker(mode, args):
@@ -310,9 +331,9 @@ def worker(mode, args):
         if any(
             getattr(config, field.name) != getattr(updated_config, field.name)
             for field in dataclasses.fields(config)
-            if not field.name.startswith("vpn_")
+            if not field.name.startswith("vpn_") and field.name != "project_813spam_url"
         ):
-            raise DeployError("A non-VPN configuration value would change; deployment stopped.")
+            raise DeployError("An unrelated configuration value would change; deployment stopped.")
         if inspect_config(updated_config, Path(args[1])) != metadata:
             raise DeployError("Persistent storage configuration would change.")
         import asyncio
